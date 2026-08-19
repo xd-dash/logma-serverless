@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/xd-dash/logma-serverless/pubsub"
 )
 
 const sseKeepAlive = 15 * time.Second
@@ -12,10 +14,10 @@ const sseKeepAlive = 15 * time.Second
 // runHandler backs POST /run: it claims a runtime, blocks until it stops
 // (via control:shutdown or client disconnect), and reports the outcome as
 // JSON.
-func runHandler(holder *runtimeHolder) http.HandlerFunc {
+func runHandler(holder *pubsub.Holder[*Runtime]) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rt := holder.claim()
-		if rt == nil {
+		rt, ok := holder.Claim()
+		if !ok {
 			http.Error(w, "runtime already claimed", http.StatusConflict)
 			return
 		}
@@ -33,10 +35,10 @@ func runHandler(holder *runtimeHolder) http.HandlerFunc {
 // as an SSE event until the runtime stops or the client disconnects.
 // Client disconnect cancels the runtime -- the HTTP request is the
 // runtime's lifetime owner.
-func eventsHandler(holder *runtimeHolder) http.HandlerFunc {
+func eventsHandler(holder *pubsub.Holder[*Runtime]) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rt := holder.claim()
-		if rt == nil {
+		rt, ok := holder.Claim()
+		if !ok {
 			http.Error(w, "runtime already claimed", http.StatusConflict)
 			return
 		}

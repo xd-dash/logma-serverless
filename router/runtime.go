@@ -19,9 +19,10 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/xd-dash/logma-serverless/pubsub"
 )
 
 const (
@@ -30,10 +31,6 @@ const (
 
 	inputBufferSize = 64
 	eventBufferSize = 64
-
-	reconnectMinDelay     = 500 * time.Millisecond
-	reconnectMaxDelay     = 30 * time.Second
-	redisOperationTimeout = 10 * time.Second
 )
 
 const (
@@ -98,11 +95,7 @@ type Runtime struct {
 // NewRuntime builds a Runtime wired to REDIS_URI/REDISCLI_AUTH. It does
 // not connect or start any subscriptions until Start is called.
 func NewRuntime() *Runtime {
-	client := redis.NewClient(&redis.Options{
-		Addr:     os.Getenv("REDIS_URI"),
-		Password: os.Getenv("REDISCLI_AUTH"),
-		DB:       0,
-	})
+	client := pubsub.NewClientFromEnv()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -337,76 +330,20 @@ func (rt *Runtime) startSubscription(channel string, subscriptions map[string]*s
 		cancel:  cancel,
 	}
 
-	go rt.subscriptionWorker(ctx, channel)
-	return nil
-}
+	sub := pubsub.Subscribe(ctx, rt.client, channel, func(payload string) {
+		select {
+		case rt.input <- runtimeMessage{channel: channel, payload: payload}:
+		case <-ctx.Done():
+		}
+	})
 
-func (rt *Runtime) subscriptionWorker(ctx context.Context, channel string) {
-	defer func() {
+	go func() {
+		<-sub.Stopped()
 		select {
 		case rt.status <- subscriptionStopped{channel: channel}:
 		case <-rt.ctx.Done():
 		}
 	}()
 
-	delay := reconnectMinDelay
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-
-		pubsub := rt.client.Subscribe(ctx, channel)
-
-		receiveCtx, cancel := context.WithTimeout(ctx, redisOperationTimeout)
-		_, err := pubsub.Receive(receiveCtx)
-		cancel()
-
-		if err != nil {
-			_ = pubsub.Close()
-			if !sleepContext(ctx, delay) {
-				return
-			}
-			delay *= 2
-			if delay > reconnectMaxDelay {
-				delay = reconnectMaxDelay
-			}
-			continue
-		}
-		delay = reconnectMinDelay
-
-	receive:
-		for {
-			select {
-			case <-ctx.Done():
-				_ = pubsub.Close()
-				return
-			case message, ok := <-pubsub.Channel():
-				if !ok {
-					_ = pubsub.Close()
-					break receive
-				}
-				select {
-				case rt.input <- runtimeMessage{
-					channel: channel,
-					payload: message.Payload,
-				}:
-				case <-ctx.Done():
-					_ = pubsub.Close()
-					return
-				}
-			}
-		}
-	}
-}
-
-func sleepContext(ctx context.Context, duration time.Duration) bool {
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
+	return nil
 }
