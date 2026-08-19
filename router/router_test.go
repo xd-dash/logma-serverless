@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/xd-dash/logma-serverless/pubsub"
 )
 
 func TestNewRouterHasNoRootRoute(t *testing.T) {
@@ -20,15 +22,15 @@ func TestNewRouterHasNoRootRoute(t *testing.T) {
 }
 
 func TestRuntimeHolderReusesAfterSessionEnds(t *testing.T) {
-	holder := &runtimeHolder{}
+	holder := pubsub.NewHolder(NewRuntime)
 
-	first := holder.claim()
-	if first == nil {
+	first, ok := holder.Claim()
+	if !ok {
 		t.Fatal("expected first claim to succeed")
 	}
 	go first.Start(context.Background())
 
-	if second := holder.claim(); second != nil {
+	if _, ok := holder.Claim(); ok {
 		t.Fatal("expected second claim to fail while first session is active")
 	}
 
@@ -36,8 +38,8 @@ func TestRuntimeHolderReusesAfterSessionEnds(t *testing.T) {
 	first.Cancel()
 	<-first.Done()
 
-	third := holder.claim()
-	if third == nil {
+	third, ok := holder.Claim()
+	if !ok {
 		t.Fatal("expected claim to succeed once the prior session finished")
 	}
 	if third == first {
