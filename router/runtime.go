@@ -291,7 +291,16 @@ func (rt *Runtime) handleShutdown(payload string) {
 }
 
 // handlePublish is the entire fanout primitive: every subscribed Redis
-// channel's messages become an event on rt.events.
+// channel's messages become an event on rt.events. The send is
+// non-blocking: rt.run()'s actor loop is single-threaded, so a blocking
+// send here would stall it on a full events channel -- and POST /run
+// never drains Events() at all, so that channel filling up is a normal
+// case, not an edge case. A stalled actor loop can't process
+// control:shutdown either, so it would also break the one thing meant to
+// end the runtime. Instead, mirror the drop-and-log-when-full pattern
+// logma's callbackDispatcher.dispatch uses for the same reason
+// (internal/routes/routes.go): a slow or absent consumer loses the
+// oldest-pending events rather than wedging the whole runtime.
 func (rt *Runtime) handlePublish(message runtimeMessage) {
 	if message.payload == "" || message.payload == "{}" {
 		return
@@ -309,7 +318,8 @@ func (rt *Runtime) handlePublish(message runtimeMessage) {
 
 	select {
 	case rt.events <- publish:
-	case <-rt.ctx.Done():
+	default:
+		log.Printf("events channel full; dropping message on %q", publish.Channel)
 	}
 }
 
