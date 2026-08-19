@@ -1,34 +1,12 @@
 package router
 
 import (
-	"crypto/subtle"
 	"net/http"
-	"os"
 	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
-
-const apiKeyHeader = "X-API-Key"
-
-func authenticateAPIKey(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiKey := os.Getenv("API_KEY")
-		if apiKey == "" {
-			http.Error(w, "API key is not set", http.StatusInternalServerError)
-			return
-		}
-
-		requestAPIKey := r.Header.Get(apiKeyHeader)
-		if subtle.ConstantTimeCompare([]byte(requestAPIKey), []byte(apiKey)) != 1 {
-			http.Error(w, "invalid API key", http.StatusUnauthorized)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
 
 // runtimeHolder mints one Runtime per session and hands it to whichever
 // request claims it. A container instance lives across many sequential
@@ -74,7 +52,6 @@ func NewRouter() http.Handler {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(authenticateAPIKey)
 
 	r.Post("/run", runHandler(holder))
 	r.Get("/events", eventsHandler(holder))
