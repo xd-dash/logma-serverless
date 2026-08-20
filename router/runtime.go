@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -88,6 +89,8 @@ type Runtime struct {
 	status chan subscriptionStopped
 	done   chan struct{}
 
+	invocation pubsub.InvocationInfo
+
 	state     atomic.Int32
 	startOnce sync.Once
 }
@@ -108,6 +111,14 @@ func NewRuntime() *Runtime {
 		status: make(chan subscriptionStopped, inputBufferSize),
 		done:   make(chan struct{}),
 	}
+}
+
+// RecordInvocation captures which Cloud Function instance and HTTP
+// request are driving this Runtime. It must be called after a
+// successful Claim and before Start -- Start records it in Redis as the
+// first thing it does, strictly before the client's first Subscribe.
+func (rt *Runtime) RecordInvocation(r *http.Request, requestID string) {
+	rt.invocation = pubsub.InvocationInfoFromRequest(r, requestID)
 }
 
 // Claim attempts to take exclusive ownership of the runtime for the
@@ -178,6 +189,13 @@ func (rt *Runtime) run() {
 		}
 	}
 	defer stopAll()
+
+	// Recorded via plain Redis commands before the client issues its
+	// first Subscribe below -- once it does, this client is never used
+	// for anything but Publish/Subscribe again.
+	if err := pubsub.RegisterInvocation(rt.ctx, rt.client, rt.invocation); err != nil {
+		log.Printf("failed to record invocation info: %v", err)
+	}
 
 	// The control plane is mandatory and is established before the
 	// runtime starts accepting normal subscription traffic.

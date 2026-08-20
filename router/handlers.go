@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
+
 	"github.com/xd-dash/logma-serverless/pubsub"
 )
 
@@ -21,6 +23,7 @@ func runHandler(holder *pubsub.Holder[*Runtime]) http.HandlerFunc {
 			http.Error(w, "runtime already claimed", http.StatusConflict)
 			return
 		}
+		rt.RecordInvocation(r, middleware.GetReqID(r.Context()))
 
 		ctx := r.Context()
 		rt.Start(ctx)
@@ -42,6 +45,7 @@ func eventsHandler(holder *pubsub.Holder[*Runtime]) http.HandlerFunc {
 			http.Error(w, "runtime already claimed", http.StatusConflict)
 			return
 		}
+		rt.RecordInvocation(r, middleware.GetReqID(r.Context()))
 
 		flusher, ok := w.(http.Flusher)
 		if !ok {

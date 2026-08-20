@@ -4,8 +4,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/xd-dash/logma-serverless/httpserver"
 	"github.com/xd-dash/logma-serverless/pubsub"
 )
 
@@ -20,21 +20,21 @@ import (
 // maxInstanceRequestConcurrency=1 is what guarantees only one request --
 // and therefore only one live Runtime -- exists at a time; the holder's
 // own locking just protects its bookkeeping.
+func NewRouter() http.Handler {
+	holder := pubsub.NewHolder(NewRuntime)
+
+	r := httpserver.New()
+	RegisterRoutes(r, holder)
+
+	return r
+}
+
+// RegisterRoutes mounts this package's routes onto r, bound to holder.
 //
 // There is deliberately no "/" route: with concurrency pinned to 1, a
 // request to a health-check path would itself consume the container's
 // one request slot.
-func NewRouter() http.Handler {
-	holder := pubsub.NewHolder(NewRuntime)
-
-	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
-
+func RegisterRoutes(r chi.Router, holder *pubsub.Holder[*Runtime]) {
 	r.Post("/run", runHandler(holder))
 	r.Get("/events", eventsHandler(holder))
-
-	return r
 }
