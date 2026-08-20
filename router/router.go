@@ -4,16 +4,17 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/xd-dash/logma-serverless/httpserver"
 	"github.com/xd-dash/logma-serverless/pubsub"
 )
 
-// Build constructs a router via httpserver.New()'s standard middleware
-// stack, then calls register to mount whichever routes and handlers a
-// deployment provides. This package owns building the router; register
-// is the drop-in that describes what it serves -- the same shell/drop-in
-// split gospace-minimal's routersource package uses one layer up
+// Build constructs a router with this deployment's standard middleware
+// stack (request ID, real IP, logging, panic recovery) attached, then
+// calls register to mount whichever routes and handlers a deployment
+// provides. This package owns building the router; register is the
+// drop-in that describes what it serves -- the same shell/drop-in split
+// gospace-minimal's routersource package uses one layer up
 // (internal/function -> routersource/serve -> routersource/source),
 // just expressed as a function value passed at import time instead of a
 // file copied in at build time. Other repos (stonks) that want the same
@@ -25,8 +26,14 @@ import (
 // -- a health check there would itself consume the container's one
 // request slot.
 func Build(register func(r chi.Router)) http.Handler {
-	r := httpserver.New()
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP)
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+
 	register(r)
+
 	return r
 }
 

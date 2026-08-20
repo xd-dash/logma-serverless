@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/xd-dash/logma-serverless/pubsub"
 )
@@ -48,6 +49,43 @@ func TestBuildLeavesUnregisteredPathsNotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for an unregistered path, got %d", rec.Code)
+	}
+}
+
+func TestBuildAttachesMiddlewareStack(t *testing.T) {
+	var gotReqID string
+	h := Build(func(r chi.Router) {
+		r.Get("/ping", func(w http.ResponseWriter, req *http.Request) {
+			gotReqID = middleware.GetReqID(req.Context())
+			w.WriteHeader(http.StatusOK)
+		})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if gotReqID == "" {
+		t.Fatal("expected middleware.RequestID to inject a request ID into the context")
+	}
+}
+
+func TestBuildRecoversFromPanic(t *testing.T) {
+	h := Build(func(r chi.Router) {
+		r.Get("/boom", func(w http.ResponseWriter, req *http.Request) {
+			panic("kaboom")
+		})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/boom", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected middleware.Recoverer to turn a panic into 500, got %d", rec.Code)
 	}
 }
 
