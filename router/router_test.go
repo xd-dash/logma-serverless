@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/xd-dash/logma-serverless/pubsub"
 )
 
@@ -18,6 +20,34 @@ func TestNewRouterHasNoRootRoute(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for /, got %d", rec.Code)
+	}
+}
+
+func TestBuildMountsProvidedRoutes(t *testing.T) {
+	h := Build(func(r chi.Router) {
+		r.Get("/ping", func(w http.ResponseWriter, req *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a route mounted by register, got %d", rec.Code)
+	}
+}
+
+func TestBuildLeavesUnregisteredPathsNotFound(t *testing.T) {
+	h := Build(func(r chi.Router) {})
+
+	req := httptest.NewRequest(http.MethodGet, "/nope", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for an unregistered path, got %d", rec.Code)
 	}
 }
 
