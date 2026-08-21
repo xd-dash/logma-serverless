@@ -63,6 +63,14 @@ type Runtime struct {
 	status chan subscriptionStopped
 
 	invocation pubsub.InvocationInfo
+
+	// channels are additional, literal Redis channel names this Runtime
+	// subscribes to on start, beyond the default Subscriptions registry
+	// -- set via Subscribe, populated from the claiming request's
+	// ?channel= query parameters. Unlike Subscriptions entries they get
+	// no dedicated Handle: any message on them falls through to
+	// handlePublish, the same fanout a control:add hot-load gets.
+	channels []string
 }
 
 // NewRuntime builds a Runtime wired to REDIS_URI/REDISCLI_AUTH. It does
@@ -83,6 +91,13 @@ func NewRuntime() *Runtime {
 // first thing it does, strictly before the client's first Subscribe.
 func (rt *Runtime) RecordInvocation(r *http.Request, requestID string) {
 	rt.invocation = pubsub.InvocationInfoFromRequest(r, requestID)
+}
+
+// Subscribe adds channel names this Runtime establishes on start, in
+// addition to the default Subscriptions registry. It must be called
+// after a successful Claim and before Start.
+func (rt *Runtime) Subscribe(channels []string) {
+	rt.channels = channels
 }
 
 // Events returns the channel of fanned-out Pub/Sub messages.
@@ -154,6 +169,16 @@ func (rt *Runtime) run() {
 		if err := startSubscription(instanceChannel); err != nil {
 			log.Printf("failed to initialize %q: %v", instanceChannel, err)
 			return
+		}
+	}
+
+	// rt.channels are literal channel names the claiming request asked
+	// for (see Subscribe) -- unlike Subscriptions entries above, a
+	// failure here doesn't abort startup: a bad user-supplied channel
+	// shouldn't take down the whole session.
+	for _, channel := range rt.channels {
+		if err := startSubscription(channel); err != nil {
+			log.Printf("failed to subscribe to requested channel %q: %v", channel, err)
 		}
 	}
 

@@ -61,6 +61,17 @@ func TestHandlePublish(t *testing.T) {
 	})
 }
 
+func TestRuntimeSubscribeSetsChannels(t *testing.T) {
+	rt := NewRuntime()
+	defer rt.Cancel()
+
+	rt.Subscribe([]string{"a", "b"})
+
+	if len(rt.channels) != 2 || rt.channels[0] != "a" || rt.channels[1] != "b" {
+		t.Fatalf("expected Subscribe to set channels to [a b], got %v", rt.channels)
+	}
+}
+
 func TestClaim(t *testing.T) {
 	rt := NewRuntime()
 	defer rt.Cancel()
