@@ -17,10 +17,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
-	"os"
 
 	"github.com/xd-dash/logma-serverless/pubsub"
 )
@@ -214,22 +212,11 @@ func (rt *Runtime) run() {
 	}
 }
 
-// bootstrap adds the channels listed in REDIS_DEFAULT_SUBSCRIPTIONS (a
-// JSON array of channel names). An unset/empty value is a no-op --
-// control:add and control:shutdown are the only structurally required
-// subscriptions.
+// bootstrap adds every channel in DefaultSubscriptions (see
+// default_subscriptions.go). control:add and control:shutdown are the
+// only structurally required subscriptions.
 func (rt *Runtime) bootstrap(add func(string) error) error {
-	raw := os.Getenv("REDIS_DEFAULT_SUBSCRIPTIONS")
-	if raw == "" {
-		return nil
-	}
-
-	var channels []string
-	if err := json.Unmarshal([]byte(raw), &channels); err != nil {
-		return fmt.Errorf("parse REDIS_DEFAULT_SUBSCRIPTIONS: %w", err)
-	}
-
-	for _, channel := range channels {
+	for _, channel := range DefaultSubscriptions {
 		if err := add(channel); err != nil {
 			return err
 		}
