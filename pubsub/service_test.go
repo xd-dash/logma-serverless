@@ -43,12 +43,12 @@ func TestRunReturnsWorksErrorPromptly(t *testing.T) {
 	}
 }
 
-func TestServiceRuntimeSatisfiesLifecycle(t *testing.T) {
-	var _ Lifecycle = (*ServiceRuntime)(nil)
+func TestRuntimeSatisfiesLifecycle(t *testing.T) {
+	var _ Lifecycle = (*Runtime)(nil)
 }
 
-func TestServiceRuntimeStartRunsConfiguredWork(t *testing.T) {
-	sr := NewServiceRuntime(unreachableClient())
+func TestRuntimeStartRunsConfiguredWork(t *testing.T) {
+	sr := NewRuntime(unreachableClient())
 	if !sr.Claim() {
 		t.Fatal("expected first claim to succeed")
 	}
@@ -78,8 +78,8 @@ func TestServiceRuntimeStartRunsConfiguredWork(t *testing.T) {
 	}
 }
 
-func TestServiceRuntimeRecordInvocationFillsSpecAtStart(t *testing.T) {
-	sr := NewServiceRuntime(unreachableClient())
+func TestRuntimeRecordInvocationFillsSpecAtStart(t *testing.T) {
+	sr := NewRuntime(unreachableClient())
 	if !sr.Claim() {
 		t.Fatal("expected first claim to succeed")
 	}
@@ -102,8 +102,8 @@ func TestServiceRuntimeRecordInvocationFillsSpecAtStart(t *testing.T) {
 	}
 }
 
-func TestServiceRuntimeDefaultShutdownHandlerCancelsSession(t *testing.T) {
-	sr := NewServiceRuntime(unreachableClient())
+func TestRuntimeDefaultShutdownHandlerCancelsSession(t *testing.T) {
+	sr := NewRuntime(unreachableClient())
 
 	handler := sr.DefaultShutdownHandler()
 	handler(`{"reason":"maintenance"}`)
@@ -111,12 +111,12 @@ func TestServiceRuntimeDefaultShutdownHandlerCancelsSession(t *testing.T) {
 	select {
 	case <-sr.Context().Done():
 	default:
-		t.Fatal("expected DefaultShutdownHandler to cancel the ServiceRuntime's context")
+		t.Fatal("expected DefaultShutdownHandler to cancel the Runtime's context")
 	}
 }
 
-func TestServiceRuntimeDefaultShutdownHandlerAcceptsEmptyPayload(t *testing.T) {
-	sr := NewServiceRuntime(unreachableClient())
+func TestRuntimeDefaultShutdownHandlerAcceptsEmptyPayload(t *testing.T) {
+	sr := NewRuntime(unreachableClient())
 
 	handler := sr.DefaultShutdownHandler()
 	handler("")
@@ -124,7 +124,41 @@ func TestServiceRuntimeDefaultShutdownHandlerAcceptsEmptyPayload(t *testing.T) {
 	select {
 	case <-sr.Context().Done():
 	default:
-		t.Fatal("expected DefaultShutdownHandler to cancel the ServiceRuntime's context even with no reason given")
+		t.Fatal("expected DefaultShutdownHandler to cancel the Runtime's context even with no reason given")
+	}
+}
+
+func TestConfigureDefaultMergesShutdownChannelWithExtras(t *testing.T) {
+	sr := NewRuntime(unreachableClient())
+
+	sr.ConfigureDefault(
+		func(ctx context.Context) error { return nil },
+		ChannelHandlers{"control:add": func(string) {}},
+	)
+
+	if _, ok := sr.spec.Channels[sr.ShutdownChannel()]; !ok {
+		t.Fatalf("expected ConfigureDefault to wire the default shutdown channel, got %v", sr.spec.Channels)
+	}
+	if _, ok := sr.spec.Channels["control:add"]; !ok {
+		t.Fatalf("expected ConfigureDefault to keep the caller's extra channel, got %v", sr.spec.Channels)
+	}
+}
+
+func TestPublishWrapsMarshalError(t *testing.T) {
+	sr := NewRuntime(unreachableClient())
+
+	err := sr.Publish("some:channel", make(chan int))
+	if err == nil {
+		t.Fatal("expected Publish to fail marshaling an unmarshalable value")
+	}
+}
+
+func TestPublishWrapsClientError(t *testing.T) {
+	sr := NewRuntime(unreachableClient())
+
+	err := sr.Publish("some:channel", map[string]string{"a": "b"})
+	if err == nil {
+		t.Fatal("expected Publish to fail against an unreachable Redis client")
 	}
 }
 
