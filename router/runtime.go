@@ -26,11 +26,15 @@ import (
 )
 
 const (
-	controlAddChannel      = "control:add"
-	controlShutdownChannel = "control:shutdown"
-
 	inputBufferSize = 64
 	eventBufferSize = 64
+)
+
+// Unnamespaced, since this repo's own control channels are the only
+// ones running in it -- see pubsub.DefaultChannel.
+var (
+	controlAddChannel      = pubsub.DefaultChannel("", "add")
+	controlShutdownChannel = pubsub.DefaultChannel("", "shutdown")
 )
 
 type runtimeMessage struct {

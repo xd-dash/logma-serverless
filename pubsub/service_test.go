@@ -3,6 +3,7 @@ package pubsub
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -39,6 +40,65 @@ func TestRunReturnsWorksErrorPromptly(t *testing.T) {
 		// subscribers that only stop once the context Work ran under is
 		// cancelled.
 		t.Fatal("Run did not return -- possible cancel/teardown ordering deadlock")
+	}
+}
+
+func TestServiceRuntimeSatisfiesLifecycle(t *testing.T) {
+	var _ Lifecycle = (*ServiceRuntime)(nil)
+}
+
+func TestServiceRuntimeStartRunsConfiguredWork(t *testing.T) {
+	sr := NewServiceRuntime(unreachableClient())
+	if !sr.Claim() {
+		t.Fatal("expected first claim to succeed")
+	}
+
+	called := make(chan struct{})
+	sr.Configure(ServiceSpec{
+		Work: func(ctx context.Context) error {
+			close(called)
+			<-ctx.Done()
+			return nil
+		},
+	})
+
+	go sr.Start(context.Background())
+
+	select {
+	case <-called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected Start to run the configured Work")
+	}
+
+	sr.Cancel()
+	select {
+	case <-sr.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected Cancel to unblock Work and close Done")
+	}
+}
+
+func TestServiceRuntimeRecordInvocationFillsSpecAtStart(t *testing.T) {
+	sr := NewServiceRuntime(unreachableClient())
+	if !sr.Claim() {
+		t.Fatal("expected first claim to succeed")
+	}
+
+	req := httptest.NewRequest("POST", "/stream", nil)
+	sr.RecordInvocation(req, "req-1")
+
+	var gotRequestID string
+	sr.Configure(ServiceSpec{
+		Work: func(ctx context.Context) error {
+			gotRequestID = sr.invocation.RequestID
+			return nil
+		},
+	})
+
+	sr.Start(context.Background())
+
+	if gotRequestID != "req-1" {
+		t.Fatalf("expected Start to have recorded invocation before Work ran, got RequestID %q", gotRequestID)
 	}
 }
 

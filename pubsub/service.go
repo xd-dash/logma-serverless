@@ -3,6 +3,9 @@ package pubsub
 import (
 	"context"
 	"log"
+	"net/http"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // ChannelHandlers maps base control-channel names to the function that
@@ -77,4 +80,69 @@ func (cp ControlPlane) Run(ctx context.Context, spec ServiceSpec) error {
 	}()
 
 	return spec.Work(runCtx)
+}
+
+// ServiceRuntime is the full, ready-to-embed implementation of a
+// claim-once, container-scoped, Redis-backed service with a fixed,
+// known-up-front set of control channels: it bundles ControlPlane
+// (channel naming/relay) and Session (claim/done/cancel) with
+// Configure/Start/RecordInvocation, so a type that only adds its own
+// state and a Work function needs no Start or run method of its own at
+// all.
+//
+// This isn't the right base for every service, though: logma-serverless's
+// own Runtime does NOT embed it, because its control:add hot-loads
+// arbitrary channels at runtime and dispatches through a single
+// in-process actor loop to safely mutate its subscriptions map --
+// something a fixed, Configure-time ServiceSpec can't express. Embed
+// ServiceRuntime when your control channels are known up front and
+// their handlers don't need that kind of shared mutable state; wire
+// ControlPlane and Session yourself (as logma-serverless's Runtime does)
+// when they don't.
+type ServiceRuntime struct {
+	ControlPlane
+	Session
+
+	invocation InvocationInfo
+	spec       ServiceSpec
+}
+
+// NewServiceRuntime builds a ServiceRuntime using client and this
+// process's InstanceID(). It has no ServiceSpec until Configure is
+// called.
+func NewServiceRuntime(client *redis.Client) ServiceRuntime {
+	return ServiceRuntime{
+		ControlPlane: NewControlPlane(client),
+		Session:      NewSession(),
+	}
+}
+
+// RecordInvocation captures which Cloud Function instance and HTTP
+// request are driving this runtime. It must be called after a
+// successful Claim and before Start; Start fills it into the
+// ServiceSpec's Invocation field automatically, so Configure doesn't
+// need to set it.
+func (sr *ServiceRuntime) RecordInvocation(r *http.Request, requestID string) {
+	sr.invocation = InvocationInfoFromRequest(r, requestID)
+}
+
+// Configure attaches the ServiceSpec Start will run. It must be called
+// after a successful Claim and before Start.
+func (sr *ServiceRuntime) Configure(spec ServiceSpec) {
+	sr.spec = spec
+}
+
+// Start satisfies Lifecycle: it begins the Session and runs the
+// configured ServiceSpec via ControlPlane.Run, logging any error Work
+// returns. It must only be called once -- a second call is a no-op
+// (guarded by the embedded Session.Begin), and Configure must have been
+// called first.
+func (sr *ServiceRuntime) Start(ctx context.Context) {
+	sr.Begin(ctx, func() {
+		spec := sr.spec
+		spec.Invocation = sr.invocation
+		if err := sr.ControlPlane.Run(sr.Context(), spec); err != nil {
+			log.Printf("pubsub: %v", err)
+		}
+	})
 }
