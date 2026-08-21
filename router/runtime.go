@@ -30,13 +30,6 @@ const (
 	eventBufferSize = 64
 )
 
-// Unnamespaced, since this repo's own control channels are the only
-// ones running in it -- see pubsub.DefaultChannel.
-var (
-	controlAddChannel      = pubsub.DefaultChannel("", "add")
-	controlShutdownChannel = pubsub.DefaultChannel("", "shutdown")
-)
-
 type runtimeMessage struct {
 	channel string
 	payload string
@@ -138,16 +131,22 @@ func (rt *Runtime) run() {
 	}
 	defer stopAll()
 
+	// The base control channel names, auto-namespaced by the embedded
+	// ControlPlane's channels.Defaults (K_SERVICE in a real deployment,
+	// else this module's own name).
+	addChannel := rt.AddChannel()
+	shutdownChannel := rt.ShutdownChannel()
+
 	// The instance-scoped names of the control channels: publishing to
 	// these reaches only this container. Each also has a global
 	// (broadcast) variant -- see the relays below -- for reaching every
 	// listening container with a single publish.
-	instanceAddChannel := rt.InstanceChannel(controlAddChannel)
-	instanceShutdownChannel := rt.InstanceChannel(controlShutdownChannel)
+	instanceAddChannel := rt.InstanceChannel(addChannel)
+	instanceShutdownChannel := rt.InstanceChannel(shutdownChannel)
 
 	relayCtx, cancelRelays := context.WithCancel(rt.Context())
-	addRelay := rt.Relay(relayCtx, controlAddChannel)
-	shutdownRelay := rt.Relay(relayCtx, controlShutdownChannel)
+	addRelay := rt.Relay(relayCtx, addChannel)
+	shutdownRelay := rt.Relay(relayCtx, shutdownChannel)
 	defer func() {
 		cancelRelays()
 		<-addRelay.Stopped()

@@ -2,7 +2,6 @@ package pubsub
 
 import (
 	"context"
-	"log"
 	"sync"
 	"sync/atomic"
 )
@@ -66,20 +65,6 @@ func (s *Session) Done() <-chan struct{} {
 // multiple times and from any goroutine.
 func (s *Session) Cancel() {
 	s.cancel()
-}
-
-// DefaultShutdownHandler returns a handler suitable for a
-// control:shutdown-shaped channel: parse payload as a ShutdownRequest,
-// log its reason under serviceName, and Cancel this Session. It's the
-// behavior every such channel wants unless a service needs to do more
-// on shutdown than just stop -- which most don't, so most services
-// never need to write their own handleShutdown at all.
-func (s *Session) DefaultShutdownHandler(serviceName string) func(payload string) {
-	return func(payload string) {
-		request := ParseShutdownRequest(payload)
-		log.Printf("%s: shutting down: reason=%q", serviceName, request.Reason)
-		s.Cancel()
-	}
 }
 
 // Begin runs fn exactly once (guarded internally -- a second call is a

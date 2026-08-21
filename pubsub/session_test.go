@@ -59,32 +59,6 @@ func TestSessionCancelUnblocksFnWatchingContext(t *testing.T) {
 	}
 }
 
-func TestDefaultShutdownHandlerCancelsSession(t *testing.T) {
-	s := NewSession()
-
-	handler := s.DefaultShutdownHandler("test-service")
-	handler(`{"reason":"maintenance"}`)
-
-	select {
-	case <-s.Context().Done():
-	default:
-		t.Fatal("expected DefaultShutdownHandler to cancel the Session's context")
-	}
-}
-
-func TestDefaultShutdownHandlerAcceptsEmptyPayload(t *testing.T) {
-	s := NewSession()
-
-	handler := s.DefaultShutdownHandler("test-service")
-	handler("")
-
-	select {
-	case <-s.Context().Done():
-	default:
-		t.Fatal("expected DefaultShutdownHandler to cancel the Session's context even with no reason given")
-	}
-}
-
 func TestSessionExternalContextCancelsSessionContext(t *testing.T) {
 	s := NewSession()
 	ctx, cancel := context.WithCancel(context.Background())

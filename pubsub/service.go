@@ -132,6 +132,25 @@ func (sr *ServiceRuntime) Configure(spec ServiceSpec) {
 	sr.spec = spec
 }
 
+// DefaultShutdownHandler returns a handler suitable for a
+// control:shutdown-shaped channel: parse payload as a ShutdownRequest,
+// log its reason under this ServiceRuntime's own namespace (via the
+// embedded ControlPlane's channels.Defaults), and Cancel it. It's the
+// behavior every such channel wants unless a service needs to do more
+// on shutdown than just stop -- which most don't, so most services
+// never need to write their own handleShutdown at all.
+func (sr *ServiceRuntime) DefaultShutdownHandler() func(payload string) {
+	label := sr.Namespace
+	if label == "" {
+		label = "service"
+	}
+	return func(payload string) {
+		request := ParseShutdownRequest(payload)
+		log.Printf("%s: shutting down: reason=%q", label, request.Reason)
+		sr.Cancel()
+	}
+}
+
 // Start satisfies Lifecycle: it begins the Session and runs the
 // configured ServiceSpec via ControlPlane.Run, logging any error Work
 // returns. It must only be called once -- a second call is a no-op

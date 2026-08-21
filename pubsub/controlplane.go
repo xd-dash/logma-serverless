@@ -5,6 +5,8 @@ import (
 	"log"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/xd-dash/logma-serverless/pubsub/channels"
 )
 
 // ControlPlane gives a container-scoped actor two ways to receive
@@ -17,18 +19,26 @@ import (
 // kinds of message the same way, without ever needing to know which one
 // arrived.
 //
+// The embedded channels.Defaults gives ShutdownChannel()/AddChannel()
+// -- base channel names for the two control-plane purposes every
+// service in this fleet uses -- promoted alongside InstanceChannel/
+// GlobalChannel, so a Runtime never has to declare or namespace them by
+// hand.
+//
 // Embed ControlPlane in a Runtime type to pick up channel naming and
 // the relay wiring without hand-rolling it per service -- both
 // logma-serverless's own Runtime and stonks's do this.
 type ControlPlane struct {
 	Client     *redis.Client
 	InstanceID string
+	channels.Defaults
 }
 
-// NewControlPlane builds a ControlPlane using client and this process's
-// InstanceID().
+// NewControlPlane builds a ControlPlane using client, this process's
+// InstanceID(), and its discovered channels.Defaults namespace (see
+// channels.Discover).
 func NewControlPlane(client *redis.Client) ControlPlane {
-	return ControlPlane{Client: client, InstanceID: InstanceID()}
+	return ControlPlane{Client: client, InstanceID: InstanceID(), Defaults: channels.Discover()}
 }
 
 // InstanceChannel returns baseChannel's name scoped to this specific

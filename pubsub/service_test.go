@@ -102,6 +102,32 @@ func TestServiceRuntimeRecordInvocationFillsSpecAtStart(t *testing.T) {
 	}
 }
 
+func TestServiceRuntimeDefaultShutdownHandlerCancelsSession(t *testing.T) {
+	sr := NewServiceRuntime(unreachableClient())
+
+	handler := sr.DefaultShutdownHandler()
+	handler(`{"reason":"maintenance"}`)
+
+	select {
+	case <-sr.Context().Done():
+	default:
+		t.Fatal("expected DefaultShutdownHandler to cancel the ServiceRuntime's context")
+	}
+}
+
+func TestServiceRuntimeDefaultShutdownHandlerAcceptsEmptyPayload(t *testing.T) {
+	sr := NewServiceRuntime(unreachableClient())
+
+	handler := sr.DefaultShutdownHandler()
+	handler("")
+
+	select {
+	case <-sr.Context().Done():
+	default:
+		t.Fatal("expected DefaultShutdownHandler to cancel the ServiceRuntime's context even with no reason given")
+	}
+}
+
 func TestRunStopsChannelsWhenExternalContextIsCancelled(t *testing.T) {
 	cp := NewControlPlane(unreachableClient())
 	ctx, cancel := context.WithCancel(context.Background())
