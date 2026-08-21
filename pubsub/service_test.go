@@ -128,6 +128,40 @@ func TestRuntimeDefaultShutdownHandlerAcceptsEmptyPayload(t *testing.T) {
 	}
 }
 
+func TestConfigureDefaultMergesShutdownChannelWithExtras(t *testing.T) {
+	sr := NewRuntime(unreachableClient())
+
+	sr.ConfigureDefault(
+		func(ctx context.Context) error { return nil },
+		ChannelHandlers{"control:add": func(string) {}},
+	)
+
+	if _, ok := sr.spec.Channels[sr.ShutdownChannel()]; !ok {
+		t.Fatalf("expected ConfigureDefault to wire the default shutdown channel, got %v", sr.spec.Channels)
+	}
+	if _, ok := sr.spec.Channels["control:add"]; !ok {
+		t.Fatalf("expected ConfigureDefault to keep the caller's extra channel, got %v", sr.spec.Channels)
+	}
+}
+
+func TestPublishWrapsMarshalError(t *testing.T) {
+	sr := NewRuntime(unreachableClient())
+
+	err := sr.Publish("some:channel", make(chan int))
+	if err == nil {
+		t.Fatal("expected Publish to fail marshaling an unmarshalable value")
+	}
+}
+
+func TestPublishWrapsClientError(t *testing.T) {
+	sr := NewRuntime(unreachableClient())
+
+	err := sr.Publish("some:channel", map[string]string{"a": "b"})
+	if err == nil {
+		t.Fatal("expected Publish to fail against an unreachable Redis client")
+	}
+}
+
 func TestRunStopsChannelsWhenExternalContextIsCancelled(t *testing.T) {
 	cp := NewControlPlane(unreachableClient())
 	ctx, cancel := context.WithCancel(context.Background())

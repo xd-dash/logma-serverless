@@ -2,6 +2,8 @@ package pubsub
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -116,6 +118,15 @@ func NewRuntime(client *redis.Client) Runtime {
 	}
 }
 
+// NewRuntimeFromEnv is NewRuntime(NewClientFromEnv()) -- what nearly
+// every embedder wants, since a container-scoped service's Redis client
+// almost always comes from REDIS_URI/REDISCLI_AUTH. Call NewRuntime
+// directly only when the client has to come from somewhere else (tests
+// pointing at an unreachable address, a non-default Redis instance).
+func NewRuntimeFromEnv() Runtime {
+	return NewRuntime(NewClientFromEnv())
+}
+
 // RecordInvocation captures which Cloud Function instance and HTTP
 // request are driving this runtime. It must be called after a
 // successful Claim and before Start; Start fills it into the
@@ -129,6 +140,39 @@ func (sr *Runtime) RecordInvocation(r *http.Request, requestID string) {
 // after a successful Claim and before Start.
 func (sr *Runtime) Configure(spec ServiceSpec) {
 	sr.spec = spec
+}
+
+// ConfigureDefault is Configure for the common case: it merges
+// extraChannels with the default control:shutdown handler every
+// fixed-channel-set service wants (so callers stop repeating
+// `rt.ShutdownChannel(): rt.DefaultShutdownHandler()` themselves), and
+// runs work as the ServiceSpec's Work. Call Configure directly instead
+// when a service genuinely needs to opt out of the default shutdown
+// handling.
+func (sr *Runtime) ConfigureDefault(work func(ctx context.Context) error, extraChannels ChannelHandlers) {
+	channels := make(ChannelHandlers, len(extraChannels)+1)
+	channels[sr.ShutdownChannel()] = sr.DefaultShutdownHandler()
+	for channel, handler := range extraChannels {
+		channels[channel] = handler
+	}
+	sr.Configure(ServiceSpec{Channels: channels, Work: work})
+}
+
+// Publish marshals event as JSON and publishes it to channel over this
+// Runtime's Redis client, using Context() as the publish's context.
+// It's the shared shape every fixed-channel-set service that streams
+// structured events onto Redis channels wants: callers supply only the
+// channel name and the event value, and get a single wrapped error back
+// to log or handle however fits their own conventions.
+func (sr *Runtime) Publish(channel string, event any) error {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("marshal %T for %s: %w", event, channel, err)
+	}
+	if err := sr.Client.Publish(sr.Context(), channel, data).Err(); err != nil {
+		return fmt.Errorf("publish to %s: %w", channel, err)
+	}
+	return nil
 }
 
 // DefaultShutdownHandler returns a handler suitable for a
