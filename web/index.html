@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>stonks / logma-serverless SSE demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 1.25rem; }
+  p.sub { color: #555; margin-top: -0.5rem; }
+  fieldset { border: 1px solid #ccc; border-radius: 6px; margin-bottom: 1rem; }
+  label { display: block; margin: 0.5rem 0 0.15rem; font-size: 0.85rem; color: #333; }
+  input[type=text] { width: 100%; box-sizing: border-box; padding: 0.4rem; font-size: 0.95rem; }
+  .checks { display: flex; gap: 1.5rem; margin-top: 0.5rem; }
+  .checks label { display: flex; align-items: center; gap: 0.35rem; margin: 0; font-size: 0.95rem; color: #1a1a1a; }
+  .actions { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem; }
+  button { padding: 0.5rem 1rem; font-size: 0.95rem; cursor: pointer; }
+  #status { font-size: 0.85rem; color: #555; }
+  #status.connected { color: #0a7a2f; }
+  #status.error { color: #b3261e; }
+  table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #eee; vertical-align: top; }
+  th { color: #555; font-weight: 600; }
+  td.channel { white-space: nowrap; font-family: ui-monospace, monospace; }
+  td.time { white-space: nowrap; color: #777; }
+  td.data { font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; }
+  #log-empty { color: #777; font-size: 0.9rem; margin-top: 1rem; }
+</style>
+</head>
+<body>
+
+<h1>stonks &rarr; logma-serverless SSE demo</h1>
+<p class="sub">
+  Trigger a stream on stonks separately (e.g. <code>POST /stream</code> with curl), read
+  the container instance ID it logs, then connect below to watch the exact channels it
+  publishes to relayed live over SSE.
+</p>
+
+<fieldset>
+  <legend>Connection</legend>
+
+  <label for="base-url">logma-serverless base URL</label>
+  <input type="text" id="base-url" placeholder="https://logma-serverless-xxxxx.a.run.app" value="http://localhost:8080">
+
+  <label for="instance-id">stonks container instance ID (from its logs)</label>
+  <input type="text" id="instance-id" placeholder="dev-a1b2c3d4">
+
+  <label for="tickers">Tickers (comma-separated)</label>
+  <input type="text" id="tickers" placeholder="AAPL, SPY" value="AAPL">
+
+  <div class="checks">
+    <label><input type="checkbox" id="type-trade" checked> trades</label>
+    <label><input type="checkbox" id="type-quote" checked> quotes</label>
+    <label><input type="checkbox" id="type-bar"> bars</label>
+  </div>
+
+  <div class="actions">
+    <button id="connect-btn">Connect</button>
+    <button id="disconnect-btn" disabled>Disconnect</button>
+    <span id="status">not connected</span>
+  </div>
+</fieldset>
+
+<table id="log-table" hidden>
+  <thead>
+    <tr><th>time</th><th>channel</th><th>data</th></tr>
+  </thead>
+  <tbody id="log-body"></tbody>
+</table>
+<p id="log-empty">No messages yet.</p>
+
+<script>
+// Maps stonks's own request vocabulary (trades/quotes/bars, see
+// stonks/router/request.go's subscriptionType) to the singular token
+// channelFor() uses in the actual Redis channel name (trade/quote/bar).
+// Final channel = "stonks:<token>:<TICKER>:<instanceID>", matching
+// channelFor(...) + InstanceChannel(...) in stonks/router.
+const CHANNEL_TOKEN = { 'type-trade': 'trade', 'type-quote': 'quote', 'type-bar': 'bar' };
+
+let eventSource = null;
+
+const statusEl = document.getElementById('status');
+const connectBtn = document.getElementById('connect-btn');
+const disconnectBtn = document.getElementById('disconnect-btn');
+const logBody = document.getElementById('log-body');
+const logTable = document.getElementById('log-table');
+const logEmpty = document.getElementById('log-empty');
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = cls || '';
+}
+
+function buildChannels() {
+  const instanceID = document.getElementById('instance-id').value.trim();
+  const tickers = document.getElementById('tickers').value
+    .split(',')
+    .map(t => t.trim().toUpperCase())
+    .filter(t => t.length > 0);
+
+  const tokens = Object.keys(CHANNEL_TOKEN)
+    .filter(id => document.getElementById(id).checked)
+    .map(id => CHANNEL_TOKEN[id]);
+
+  const channels = [];
+  for (const ticker of tickers) {
+    for (const token of tokens) {
+      channels.push(`stonks:${token}:${ticker}:${instanceID}`);
+    }
+  }
+  return channels;
+}
+
+function connect() {
+  const baseURL = document.getElementById('base-url').value.trim().replace(/\/+$/, '');
+  const instanceID = document.getElementById('instance-id').value.trim();
+  if (!baseURL) { setStatus('base URL is required', 'error'); return; }
+  if (!instanceID) { setStatus('instance ID is required', 'error'); return; }
+
+  const channels = buildChannels();
+  if (channels.length === 0) { setStatus('no tickers/types selected', 'error'); return; }
+
+  const params = new URLSearchParams();
+  for (const channel of channels) params.append('channel', channel);
+  const url = `${baseURL}/events?${params.toString()}`;
+
+  eventSource = new EventSource(url);
+  setStatus('connecting...');
+  connectBtn.disabled = true;
+
+  eventSource.onopen = () => {
+    setStatus(`connected — watching ${channels.length} channel(s)`, 'connected');
+    disconnectBtn.disabled = false;
+  };
+
+  eventSource.onerror = () => {
+    setStatus('connection error (check base URL / CORS / that logma-serverless is running)', 'error');
+  };
+
+  eventSource.onmessage = (event) => {
+    let parsed;
+    try {
+      parsed = JSON.parse(event.data);
+    } catch {
+      parsed = { channel: '(unparseable)', data: event.data };
+    }
+    addRow(parsed.channel || '', parsed.data);
+  };
+}
+
+function disconnect() {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+  setStatus('not connected');
+  connectBtn.disabled = false;
+  disconnectBtn.disabled = true;
+}
+
+function addRow(channel, data) {
+  logEmpty.hidden = true;
+  logTable.hidden = false;
+
+  const row = document.createElement('tr');
+
+  const timeCell = document.createElement('td');
+  timeCell.className = 'time';
+  timeCell.textContent = new Date().toLocaleTimeString();
+
+  const channelCell = document.createElement('td');
+  channelCell.className = 'channel';
+  channelCell.textContent = channel;
+
+  const dataCell = document.createElement('td');
+  dataCell.className = 'data';
+  dataCell.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+
+  row.append(timeCell, channelCell, dataCell);
+  logBody.prepend(row);
+}
+
+connectBtn.addEventListener('click', connect);
+disconnectBtn.addEventListener('click', disconnect);
+</script>
+
+</body>
+</html>

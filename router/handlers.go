@@ -13,6 +13,14 @@ import (
 
 const sseKeepAlive = 15 * time.Second
 
+// requestedChannels returns the channel names a client asked to
+// subscribe to via repeated ?channel= query parameters -- the only way
+// to pass this today, since GET /events is read by the browser's
+// EventSource, which can't send a body or custom headers.
+func requestedChannels(r *http.Request) []string {
+	return r.URL.Query()["channel"]
+}
+
 // runHandler backs POST /run: it claims a runtime, blocks until it stops
 // (via control:shutdown or client disconnect), and reports the outcome as
 // JSON.
@@ -24,6 +32,7 @@ func runHandler(holder *pubsub.Holder[*Runtime]) http.HandlerFunc {
 			return
 		}
 		rt.RecordInvocation(r, middleware.GetReqID(r.Context()))
+		rt.Subscribe(requestedChannels(r))
 
 		ctx := r.Context()
 		rt.Start(ctx)
@@ -46,6 +55,7 @@ func eventsHandler(holder *pubsub.Holder[*Runtime]) http.HandlerFunc {
 			return
 		}
 		rt.RecordInvocation(r, middleware.GetReqID(r.Context()))
+		rt.Subscribe(requestedChannels(r))
 
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -59,6 +69,7 @@ func eventsHandler(holder *pubsub.Holder[*Runtime]) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("X-Accel-Buffering", "no")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.WriteHeader(http.StatusOK)
 
 		_, _ = w.Write([]byte(": connected\n\n"))
