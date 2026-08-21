@@ -42,12 +42,6 @@ type subscription struct {
 	cancel  context.CancelFunc
 }
 
-// AddSubscription is the payload published to control:add to hot-load a
-// new subscription into a running container.
-type AddSubscription struct {
-	Channel string `json:"channel"`
-}
-
 // PublishRequest is the payload delivered to a subscribed channel. If the
 // message itself doesn't carry a channel, the Redis channel it arrived on
 // is used instead.
@@ -129,28 +123,6 @@ func (rt *Runtime) run() {
 	}
 	defer stopAll()
 
-	// The base control channel names, auto-namespaced by the embedded
-	// ControlPlane's channels.Defaults (K_SERVICE in a real deployment,
-	// else this module's own name).
-	addChannel := rt.AddChannel()
-	shutdownChannel := rt.ShutdownChannel()
-
-	// The instance-scoped names of the control channels: publishing to
-	// these reaches only this container. Each also has a global
-	// (broadcast) variant -- see the relays below -- for reaching every
-	// listening container with a single publish.
-	instanceAddChannel := rt.InstanceChannel(addChannel)
-	instanceShutdownChannel := rt.InstanceChannel(shutdownChannel)
-
-	relayCtx, cancelRelays := context.WithCancel(rt.Context())
-	addRelay := rt.Relay(relayCtx, addChannel)
-	shutdownRelay := rt.Relay(relayCtx, shutdownChannel)
-	defer func() {
-		cancelRelays()
-		<-addRelay.Stopped()
-		<-shutdownRelay.Stopped()
-	}()
-
 	// Recorded via plain Redis commands before the client issues its
 	// first Subscribe below -- once it does, this client is never used
 	// for anything but Publish/Subscribe again.
@@ -158,20 +130,31 @@ func (rt *Runtime) run() {
 		log.Printf("failed to record invocation info: %v", err)
 	}
 
-	// The control plane is mandatory and is established before the
-	// runtime starts accepting normal subscription traffic.
-	if err := startSubscription(instanceAddChannel); err != nil {
-		log.Printf("failed to initialize %q: %v", instanceAddChannel, err)
-		return
-	}
-	if err := startSubscription(instanceShutdownChannel); err != nil {
-		log.Printf("failed to initialize %q: %v", instanceShutdownChannel, err)
-		return
-	}
+	relayCtx, cancelRelays := context.WithCancel(rt.Context())
+	var relays []*pubsub.Subscriber
+	defer func() {
+		cancelRelays()
+		for _, relay := range relays {
+			<-relay.Stopped()
+		}
+	}()
 
-	if err := rt.bootstrap(startSubscription); err != nil {
-		log.Printf("subscription bootstrap failed: %v", err)
-		return
+	// Subscriptions (subscriptions.go) maps every channel this Runtime
+	// establishes on start to the Handle that processes it --
+	// control:add and control:shutdown are registered by default, and
+	// RegisterChannel can add more. Each gets an instance-scoped
+	// subscription, a global-channel relay, and its Handle wired into
+	// the dispatch table below.
+	handlers := make(map[string]Handle, len(Subscriptions))
+	for base, handle := range Subscriptions {
+		instanceChannel := rt.InstanceChannel(base)
+		handlers[instanceChannel] = handle
+
+		relays = append(relays, rt.Relay(relayCtx, base))
+		if err := startSubscription(instanceChannel); err != nil {
+			log.Printf("failed to initialize %q: %v", instanceChannel, err)
+			return
+		}
 	}
 
 	log.Printf("Redis runtime started (instance=%s)", rt.InstanceID)
@@ -182,13 +165,9 @@ func (rt *Runtime) run() {
 			return
 
 		case message := <-rt.input:
-			switch message.channel {
-			case instanceAddChannel:
-				rt.handleAdd(message.payload, startSubscription)
-			case instanceShutdownChannel:
-				rt.handleShutdown(message.payload)
-				return
-			default:
+			if handle, ok := handlers[message.channel]; ok {
+				handle(&rt.Session, message.payload, startSubscription)
+			} else {
 				rt.handlePublish(message)
 			}
 
@@ -198,52 +177,18 @@ func (rt *Runtime) run() {
 				return
 			}
 
-			// A non-control subscription that disappears is restarted.
-			// The subscription worker itself handles Redis connection
-			// recovery while it remains alive, but a terminal worker
-			// failure is re-established here.
-			if stopped.channel != instanceAddChannel &&
-				stopped.channel != instanceShutdownChannel {
+			// A subscription outside the registered set that
+			// disappears is restarted. The subscription worker itself
+			// handles Redis connection recovery while it remains
+			// alive, but a terminal worker failure is re-established
+			// here.
+			if _, registered := handlers[stopped.channel]; !registered {
 				if err := startSubscription(stopped.channel); err != nil {
 					log.Printf("failed to restart subscription %q: %v", stopped.channel, err)
 				}
 			}
 		}
 	}
-}
-
-// bootstrap adds every channel in DefaultSubscriptions (see
-// default_subscriptions.go). control:add and control:shutdown are the
-// only structurally required subscriptions.
-func (rt *Runtime) bootstrap(add func(string) error) error {
-	for _, channel := range DefaultSubscriptions {
-		if err := add(channel); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (rt *Runtime) handleAdd(payload string, add func(string) error) {
-	var request AddSubscription
-	if err := json.Unmarshal([]byte(payload), &request); err != nil {
-		log.Printf("invalid add subscription message: %v", err)
-		return
-	}
-
-	if request.Channel == "" {
-		log.Printf("add subscription contained empty channel")
-		return
-	}
-
-	if err := add(request.Channel); err != nil {
-		log.Printf("failed to add subscription %q: %v", request.Channel, err)
-	}
-}
-
-func (rt *Runtime) handleShutdown(payload string) {
-	request := pubsub.ParseShutdownRequest(payload)
-	log.Printf("shutting down runtime: reason=%q", request.Reason)
 }
 
 // handlePublish is the entire fanout primitive: every subscribed Redis

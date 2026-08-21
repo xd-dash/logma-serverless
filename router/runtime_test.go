@@ -1,7 +1,6 @@
 package router
 
 import (
-	"errors"
 	"testing"
 	"time"
 )
@@ -59,89 +58,6 @@ func TestHandlePublish(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("expected an event")
 		}
-	})
-}
-
-func TestHandleAdd(t *testing.T) {
-	rt := NewRuntime()
-	defer rt.Cancel()
-
-	t.Run("empty channel is rejected", func(t *testing.T) {
-		called := false
-		rt.handleAdd(`{"channel":""}`, func(string) error {
-			called = true
-			return nil
-		})
-		if called {
-			t.Fatal("add should not be called for an empty channel")
-		}
-	})
-
-	t.Run("invalid JSON is rejected", func(t *testing.T) {
-		called := false
-		rt.handleAdd("not json", func(string) error {
-			called = true
-			return nil
-		})
-		if called {
-			t.Fatal("add should not be called for invalid JSON")
-		}
-	})
-
-	t.Run("valid channel is added", func(t *testing.T) {
-		var got string
-		rt.handleAdd(`{"channel":"dev:global:logs:2"}`, func(channel string) error {
-			got = channel
-			return nil
-		})
-		if got != "dev:global:logs:2" {
-			t.Fatalf("expected dev:global:logs:2, got %q", got)
-		}
-	})
-}
-
-func TestBootstrap(t *testing.T) {
-	rt := NewRuntime()
-	defer rt.Cancel()
-
-	withDefaultSubscriptions := func(channels []string, fn func()) {
-		orig := DefaultSubscriptions
-		DefaultSubscriptions = channels
-		defer func() { DefaultSubscriptions = orig }()
-		fn()
-	}
-
-	t.Run("empty list is a no-op", func(t *testing.T) {
-		withDefaultSubscriptions(nil, func() {
-			if err := rt.bootstrap(func(string) error { return nil }); err != nil {
-				t.Fatalf("expected no error, got %v", err)
-			}
-		})
-	})
-
-	t.Run("adds every listed channel", func(t *testing.T) {
-		withDefaultSubscriptions([]string{"a", "b", "c"}, func() {
-			var added []string
-			err := rt.bootstrap(func(channel string) error {
-				added = append(added, channel)
-				return nil
-			})
-			if err != nil {
-				t.Fatalf("expected no error, got %v", err)
-			}
-			if len(added) != 3 || added[0] != "a" || added[1] != "b" || added[2] != "c" {
-				t.Fatalf("unexpected channels added: %v", added)
-			}
-		})
-	})
-
-	t.Run("propagates add errors", func(t *testing.T) {
-		withDefaultSubscriptions([]string{"a"}, func() {
-			wantErr := errors.New("boom")
-			if err := rt.bootstrap(func(string) error { return wantErr }); !errors.Is(err, wantErr) {
-				t.Fatalf("expected bootstrap to propagate add's error, got %v", err)
-			}
-		})
 	})
 }
 
