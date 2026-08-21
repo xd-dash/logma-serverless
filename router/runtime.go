@@ -42,12 +42,6 @@ type subscription struct {
 	cancel  context.CancelFunc
 }
 
-// AddSubscription is the payload published to control:add to hot-load a
-// new subscription into a running container.
-type AddSubscription struct {
-	Channel string `json:"channel"`
-}
-
 // PublishRequest is the payload delivered to a subscribed channel. If the
 // message itself doesn't carry a channel, the Redis channel it arrived on
 // is used instead.
@@ -195,29 +189,6 @@ func (rt *Runtime) run() {
 			}
 		}
 	}
-}
-
-func (rt *Runtime) handleAdd(payload string, add func(string) error) {
-	var request AddSubscription
-	if err := json.Unmarshal([]byte(payload), &request); err != nil {
-		log.Printf("invalid add subscription message: %v", err)
-		return
-	}
-
-	if request.Channel == "" {
-		log.Printf("add subscription contained empty channel")
-		return
-	}
-
-	if err := add(request.Channel); err != nil {
-		log.Printf("failed to add subscription %q: %v", request.Channel, err)
-	}
-}
-
-func (rt *Runtime) handleShutdown(payload string) {
-	request := pubsub.ParseShutdownRequest(payload)
-	log.Printf("shutting down runtime: reason=%q", request.Reason)
-	rt.Cancel()
 }
 
 // handlePublish is the entire fanout primitive: every subscribed Redis

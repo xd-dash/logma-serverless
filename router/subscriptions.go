@@ -1,5 +1,12 @@
 package router
 
+import (
+	"encoding/json"
+	"log"
+
+	"github.com/xd-dash/logma-serverless/pubsub"
+)
+
 // Handle processes one payload arriving on a subscribed channel. add
 // lets a handler hot-load more subscriptions into the running
 // container -- control:add's own handler is the only one that
@@ -17,29 +24,54 @@ type Subscription struct {
 	Handle  Handle
 }
 
-// Subscriptions lists every channel a Runtime establishes on start.
-// control:add and control:shutdown anchor the list -- they're
-// structurally required, expressed as ordinary entries here rather than
-// special-cased in Runtime.run. Register appends more.
-var Subscriptions = []Subscription{
-	{
-		Channel: func(rt *Runtime) string { return rt.AddChannel() },
-		Handle: func(rt *Runtime, payload string, add func(string) error) {
-			rt.handleAdd(payload, add)
-		},
-	},
-	{
-		Channel: func(rt *Runtime) string { return rt.ShutdownChannel() },
-		Handle: func(rt *Runtime, payload string, _ func(string) error) {
-			rt.handleShutdown(payload)
-		},
-	},
-}
+// Subscriptions lists every channel a Runtime establishes on start. It
+// starts empty; init below seeds control:add and control:shutdown
+// through Register, the same entry point any other file or package
+// uses to compose in more.
+var Subscriptions []Subscription
 
 // Register appends a channel/handler pair to Subscriptions. Call it --
 // from an init() in this file, another file in this package, or another
 // package that imports router -- to compose additional startup
-// subscriptions into every Runtime without editing the list above.
+// subscriptions into every Runtime.
 func Register(channel func(rt *Runtime) string, handle Handle) {
 	Subscriptions = append(Subscriptions, Subscription{Channel: channel, Handle: handle})
+}
+
+func init() {
+	Register(
+		func(rt *Runtime) string { return rt.AddChannel() },
+		func(rt *Runtime, payload string, add func(string) error) { rt.handleAdd(payload, add) },
+	)
+	Register(
+		func(rt *Runtime) string { return rt.ShutdownChannel() },
+		func(rt *Runtime, payload string, _ func(string) error) { rt.handleShutdown(payload) },
+	)
+}
+
+// AddSubscription is the payload published to control:add to hot-load a
+// new subscription into a running container.
+type AddSubscription struct {
+	Channel string `json:"channel"`
+}
+
+func (rt *Runtime) handleAdd(payload string, add func(string) error) {
+	var request AddSubscription
+	if err := json.Unmarshal([]byte(payload), &request); err != nil {
+		log.Printf("invalid add subscription message: %v", err)
+		return
+	}
+	if request.Channel == "" {
+		log.Printf("add subscription contained empty channel")
+		return
+	}
+	if err := add(request.Channel); err != nil {
+		log.Printf("failed to add subscription %q: %v", request.Channel, err)
+	}
+}
+
+func (rt *Runtime) handleShutdown(payload string) {
+	request := pubsub.ParseShutdownRequest(payload)
+	log.Printf("shutting down runtime: reason=%q", request.Reason)
+	rt.Cancel()
 }
