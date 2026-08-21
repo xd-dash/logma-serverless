@@ -13,6 +13,17 @@ import (
 // future one) never needs to import router to implement Handle --
 // router imports them instead, the same one-way direction
 // dash-xd/gospace's own registry uses.
+//
+// Handle is a plain function type, so Subscriptions doesn't care
+// whether a registered value is a package-level function (as
+// addsub.Handle and shutdown.Handle are today) or a bound method value
+// on a handler carrying its own state, e.g.
+// RegisterChannel(channel, statefulHandler.Handle) -- state that
+// belongs to one handler and must survive across invocations lives on
+// that handler's own struct, not here. Shared resources (a Redis
+// client, config, a logger) belong at the application/container level
+// and get reached the same way add already is: passed in as an
+// argument, not threaded through session.
 type Handle func(session *pubsub.Session, payload string, add func(channel string) error)
 
 // Subscriptions maps a base channel name (already namespaced per

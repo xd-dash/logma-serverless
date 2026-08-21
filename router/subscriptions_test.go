@@ -36,6 +36,37 @@ func TestSubscriptionsIncludeAddAndShutdown(t *testing.T) {
 	}
 }
 
+// statefulHandler exists only to prove Subscriptions accepts a bound
+// method value exactly like it accepts a package-level function -- see
+// Handle's doc comment.
+type statefulHandler struct {
+	calls int
+}
+
+func (h *statefulHandler) Handle(session *pubsub.Session, payload string, add func(string) error) {
+	h.calls++
+}
+
+func TestRegisterChannelAcceptsStatefulHandlerMethodValue(t *testing.T) {
+	const testChannel = "test:stateful"
+	defer delete(Subscriptions, testChannel)
+
+	handler := &statefulHandler{}
+	RegisterChannel(testChannel, handler.Handle)
+
+	handle, ok := Subscriptions[testChannel]
+	if !ok {
+		t.Fatalf("expected RegisterChannel to add %q to Subscriptions", testChannel)
+	}
+
+	handle(nil, "payload", nil)
+	handle(nil, "payload", nil)
+
+	if handler.calls != 2 {
+		t.Fatalf("expected the handler's own state to persist across calls through Subscriptions, got %d calls", handler.calls)
+	}
+}
+
 func TestRegisterChannelAddsSubscription(t *testing.T) {
 	const testChannel = "test:channel"
 	defer delete(Subscriptions, testChannel)
