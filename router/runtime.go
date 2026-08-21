@@ -139,16 +139,16 @@ func (rt *Runtime) run() {
 		}
 	}()
 
-	// Subscriptions (subscriptions.go) lists every channel this Runtime
-	// establishes on start -- control:add and control:shutdown anchor
-	// it, and Register can append more. Each gets an instance-scoped
+	// Subscriptions (subscriptions.go) maps every channel this Runtime
+	// establishes on start to the Handle that processes it --
+	// control:add and control:shutdown are registered by default, and
+	// RegisterChannel can add more. Each gets an instance-scoped
 	// subscription, a global-channel relay, and its Handle wired into
 	// the dispatch table below.
 	handlers := make(map[string]Handle, len(Subscriptions))
-	for _, sub := range Subscriptions {
-		base := sub.Channel(rt)
+	for base, handle := range Subscriptions {
 		instanceChannel := rt.InstanceChannel(base)
-		handlers[instanceChannel] = sub.Handle
+		handlers[instanceChannel] = handle
 
 		relays = append(relays, rt.Relay(relayCtx, base))
 		if err := startSubscription(instanceChannel); err != nil {
@@ -166,7 +166,7 @@ func (rt *Runtime) run() {
 
 		case message := <-rt.input:
 			if handle, ok := handlers[message.channel]; ok {
-				handle(rt, message.payload, startSubscription)
+				handle(&rt.Session, message.payload, startSubscription)
 			} else {
 				rt.handlePublish(message)
 			}
