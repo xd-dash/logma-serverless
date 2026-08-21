@@ -31,16 +31,15 @@ type InvocationInfo struct {
 
 // InvocationInfoFromRequest builds an InvocationInfo from the standard
 // Cloud Run/Cloud Functions Gen 2 environment (K_SERVICE, K_REVISION,
-// K_CONFIGURATION), the process hostname, and r. requestID is taken as
-// an explicit argument rather than read from r here so this package
-// doesn't need to know which router library produced it.
+// K_CONFIGURATION), this process's InstanceID(), and r. requestID is
+// taken as an explicit argument rather than read from r here so this
+// package doesn't need to know which router library produced it.
 func InvocationInfoFromRequest(r *http.Request, requestID string) InvocationInfo {
-	hostname, _ := os.Hostname()
 	return InvocationInfo{
 		Service:       os.Getenv("K_SERVICE"),
 		Revision:      os.Getenv("K_REVISION"),
 		Configuration: os.Getenv("K_CONFIGURATION"),
-		InstanceID:    hostname,
+		InstanceID:    InstanceID(),
 		RequestID:     requestID,
 		Method:        r.Method,
 		Path:          r.URL.Path,

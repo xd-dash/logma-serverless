@@ -3,11 +3,14 @@
 // inside a Cloud Functions Gen 2 HTTP function pinned to
 // maxInstanceRequestConcurrency=1. The HTTP request that starts the
 // runtime owns its entire lifetime: it establishes control-plane
-// subscriptions (control:add, control:shutdown), lets Redis hot-load
-// additional subscriptions into the running container, fans every
-// subscribed channel's messages out as one event stream, and shuts the
-// runtime down (ending the request) on a control:shutdown publish or
-// client disconnect.
+// subscriptions (control:add, control:shutdown) on both this
+// container's own instance channel (via pubsub.ControlPlane, embedded
+// below) and the shared global channel that reaches every container, so
+// a control message can target one specific container or all of them,
+// lets Redis hot-load additional subscriptions into the running
+// container, fans every subscribed channel's messages out as one event
+// stream, and shuts the runtime down (ending the request) on a
+// control:shutdown publish or client disconnect.
 package router
 
 import (
@@ -20,8 +23,6 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-
-	"github.com/redis/go-redis/v9"
 
 	"github.com/xd-dash/logma-serverless/pubsub"
 )
@@ -79,7 +80,7 @@ type PublishRequest struct {
 // concurrently; the actual guarantee comes from the Cloud Function's
 // maxInstanceRequestConcurrency=1 configuration.
 type Runtime struct {
-	client *redis.Client
+	pubsub.ControlPlane
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -98,18 +99,16 @@ type Runtime struct {
 // NewRuntime builds a Runtime wired to REDIS_URI/REDISCLI_AUTH. It does
 // not connect or start any subscriptions until Start is called.
 func NewRuntime() *Runtime {
-	client := pubsub.NewClientFromEnv()
-
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Runtime{
-		client: client,
-		ctx:    ctx,
-		cancel: cancel,
-		input:  make(chan runtimeMessage, inputBufferSize),
-		events: make(chan PublishRequest, eventBufferSize),
-		status: make(chan subscriptionStopped, inputBufferSize),
-		done:   make(chan struct{}),
+		ControlPlane: pubsub.NewControlPlane(pubsub.NewClientFromEnv()),
+		ctx:          ctx,
+		cancel:       cancel,
+		input:        make(chan runtimeMessage, inputBufferSize),
+		events:       make(chan PublishRequest, eventBufferSize),
+		status:       make(chan subscriptionStopped, inputBufferSize),
+		done:         make(chan struct{}),
 	}
 }
 
@@ -190,21 +189,37 @@ func (rt *Runtime) run() {
 	}
 	defer stopAll()
 
+	// The instance-scoped names of the control channels: publishing to
+	// these reaches only this container. Each also has a global
+	// (broadcast) variant -- see the relays below -- for reaching every
+	// listening container with a single publish.
+	instanceAddChannel := rt.InstanceChannel(controlAddChannel)
+	instanceShutdownChannel := rt.InstanceChannel(controlShutdownChannel)
+
+	relayCtx, cancelRelays := context.WithCancel(rt.ctx)
+	addRelay := rt.Relay(relayCtx, controlAddChannel)
+	shutdownRelay := rt.Relay(relayCtx, controlShutdownChannel)
+	defer func() {
+		cancelRelays()
+		<-addRelay.Stopped()
+		<-shutdownRelay.Stopped()
+	}()
+
 	// Recorded via plain Redis commands before the client issues its
 	// first Subscribe below -- once it does, this client is never used
 	// for anything but Publish/Subscribe again.
-	if err := pubsub.RegisterInvocation(rt.ctx, rt.client, rt.invocation); err != nil {
+	if err := pubsub.RegisterInvocation(rt.ctx, rt.Client, rt.invocation); err != nil {
 		log.Printf("failed to record invocation info: %v", err)
 	}
 
 	// The control plane is mandatory and is established before the
 	// runtime starts accepting normal subscription traffic.
-	if err := startSubscription(controlAddChannel); err != nil {
-		log.Printf("failed to initialize %q: %v", controlAddChannel, err)
+	if err := startSubscription(instanceAddChannel); err != nil {
+		log.Printf("failed to initialize %q: %v", instanceAddChannel, err)
 		return
 	}
-	if err := startSubscription(controlShutdownChannel); err != nil {
-		log.Printf("failed to initialize %q: %v", controlShutdownChannel, err)
+	if err := startSubscription(instanceShutdownChannel); err != nil {
+		log.Printf("failed to initialize %q: %v", instanceShutdownChannel, err)
 		return
 	}
 
@@ -213,7 +228,7 @@ func (rt *Runtime) run() {
 		return
 	}
 
-	log.Printf("Redis runtime started")
+	log.Printf("Redis runtime started (instance=%s)", rt.InstanceID)
 
 	for {
 		select {
@@ -222,9 +237,9 @@ func (rt *Runtime) run() {
 
 		case message := <-rt.input:
 			switch message.channel {
-			case controlAddChannel:
+			case instanceAddChannel:
 				rt.handleAdd(message.payload, startSubscription)
-			case controlShutdownChannel:
+			case instanceShutdownChannel:
 				rt.handleShutdown(message.payload)
 				return
 			default:
@@ -241,8 +256,8 @@ func (rt *Runtime) run() {
 			// The subscription worker itself handles Redis connection
 			// recovery while it remains alive, but a terminal worker
 			// failure is re-established here.
-			if stopped.channel != controlAddChannel &&
-				stopped.channel != controlShutdownChannel {
+			if stopped.channel != instanceAddChannel &&
+				stopped.channel != instanceShutdownChannel {
 				if err := startSubscription(stopped.channel); err != nil {
 					log.Printf("failed to restart subscription %q: %v", stopped.channel, err)
 				}
@@ -348,7 +363,7 @@ func (rt *Runtime) startSubscription(channel string, subscriptions map[string]*s
 		cancel:  cancel,
 	}
 
-	sub := pubsub.Subscribe(ctx, rt.client, channel, func(payload string) {
+	sub := pubsub.Subscribe(ctx, rt.Client, channel, func(payload string) {
 		select {
 		case rt.input <- runtimeMessage{channel: channel, payload: payload}:
 		case <-ctx.Done():
