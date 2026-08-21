@@ -43,12 +43,12 @@ func TestRunReturnsWorksErrorPromptly(t *testing.T) {
 	}
 }
 
-func TestServiceRuntimeSatisfiesLifecycle(t *testing.T) {
-	var _ Lifecycle = (*ServiceRuntime)(nil)
+func TestRuntimeSatisfiesLifecycle(t *testing.T) {
+	var _ Lifecycle = (*Runtime)(nil)
 }
 
-func TestServiceRuntimeStartRunsConfiguredWork(t *testing.T) {
-	sr := NewServiceRuntime(unreachableClient())
+func TestRuntimeStartRunsConfiguredWork(t *testing.T) {
+	sr := NewRuntime(unreachableClient())
 	if !sr.Claim() {
 		t.Fatal("expected first claim to succeed")
 	}
@@ -78,8 +78,8 @@ func TestServiceRuntimeStartRunsConfiguredWork(t *testing.T) {
 	}
 }
 
-func TestServiceRuntimeRecordInvocationFillsSpecAtStart(t *testing.T) {
-	sr := NewServiceRuntime(unreachableClient())
+func TestRuntimeRecordInvocationFillsSpecAtStart(t *testing.T) {
+	sr := NewRuntime(unreachableClient())
 	if !sr.Claim() {
 		t.Fatal("expected first claim to succeed")
 	}
@@ -102,8 +102,8 @@ func TestServiceRuntimeRecordInvocationFillsSpecAtStart(t *testing.T) {
 	}
 }
 
-func TestServiceRuntimeDefaultShutdownHandlerCancelsSession(t *testing.T) {
-	sr := NewServiceRuntime(unreachableClient())
+func TestRuntimeDefaultShutdownHandlerCancelsSession(t *testing.T) {
+	sr := NewRuntime(unreachableClient())
 
 	handler := sr.DefaultShutdownHandler()
 	handler(`{"reason":"maintenance"}`)
@@ -111,12 +111,12 @@ func TestServiceRuntimeDefaultShutdownHandlerCancelsSession(t *testing.T) {
 	select {
 	case <-sr.Context().Done():
 	default:
-		t.Fatal("expected DefaultShutdownHandler to cancel the ServiceRuntime's context")
+		t.Fatal("expected DefaultShutdownHandler to cancel the Runtime's context")
 	}
 }
 
-func TestServiceRuntimeDefaultShutdownHandlerAcceptsEmptyPayload(t *testing.T) {
-	sr := NewServiceRuntime(unreachableClient())
+func TestRuntimeDefaultShutdownHandlerAcceptsEmptyPayload(t *testing.T) {
+	sr := NewRuntime(unreachableClient())
 
 	handler := sr.DefaultShutdownHandler()
 	handler("")
@@ -124,7 +124,7 @@ func TestServiceRuntimeDefaultShutdownHandlerAcceptsEmptyPayload(t *testing.T) {
 	select {
 	case <-sr.Context().Done():
 	default:
-		t.Fatal("expected DefaultShutdownHandler to cancel the ServiceRuntime's context even with no reason given")
+		t.Fatal("expected DefaultShutdownHandler to cancel the Runtime's context even with no reason given")
 	}
 }
 

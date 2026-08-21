@@ -18,12 +18,12 @@ type ChannelHandlers map[string]func(payload string)
 // (instance channel + global relay, each) and returns a single teardown
 // func that waits for all of them to stop. It's for callers with a
 // small, static, known-up-front set of control channels; a caller that
-// needs to add channels at runtime (logma-serverless's own Runtime,
-// which hot-loads arbitrary channels via control:add) wires
-// InstanceChannel/GlobalChannel/Relay itself instead, since a message
-// arriving on one of those must stay serialized with its own dispatch
-// loop rather than invoking a handler concurrently from this method's
-// caller.
+// needs to add channels at runtime (logma-serverless's own
+// router.Runtime, which hot-loads arbitrary channels via control:add)
+// wires InstanceChannel/GlobalChannel/Relay itself instead, since a
+// message arriving on one of those must stay serialized with its own
+// dispatch loop rather than invoking a handler concurrently from this
+// method's caller.
 func (cp ControlPlane) SubscribeAll(ctx context.Context, handlers ChannelHandlers) (teardown func()) {
 	subs := make([]*Subscriber, 0, len(handlers)*2)
 	for baseChannel, onMessage := range handlers {
@@ -82,24 +82,24 @@ func (cp ControlPlane) Run(ctx context.Context, spec ServiceSpec) error {
 	return spec.Work(runCtx)
 }
 
-// ServiceRuntime is the full, ready-to-embed implementation of a
-// claim-once, container-scoped, Redis-backed service with a fixed,
-// known-up-front set of control channels: it bundles ControlPlane
-// (channel naming/relay) and Session (claim/done/cancel) with
+// Runtime is the full, ready-to-embed implementation of a claim-once,
+// container-scoped, Redis-backed service with a fixed, known-up-front
+// set of control channels: it bundles ControlPlane (channel
+// naming/relay) and Session (claim/done/cancel) with
 // Configure/Start/RecordInvocation, so a type that only adds its own
 // state and a Work function needs no Start or run method of its own at
 // all.
 //
 // This isn't the right base for every service, though: logma-serverless's
-// own Runtime does NOT embed it, because its control:add hot-loads
+// own router.Runtime does NOT embed it, because its control:add hot-loads
 // arbitrary channels at runtime and dispatches through a single
 // in-process actor loop to safely mutate its subscriptions map --
 // something a fixed, Configure-time ServiceSpec can't express. Embed
-// ServiceRuntime when your control channels are known up front and
-// their handlers don't need that kind of shared mutable state; wire
-// ControlPlane and Session yourself (as logma-serverless's Runtime does)
-// when they don't.
-type ServiceRuntime struct {
+// Runtime when your control channels are known up front and their
+// handlers don't need that kind of shared mutable state; wire
+// ControlPlane and Session yourself (as logma-serverless's router.Runtime
+// does) when they don't.
+type Runtime struct {
 	ControlPlane
 	Session
 
@@ -107,11 +107,10 @@ type ServiceRuntime struct {
 	spec       ServiceSpec
 }
 
-// NewServiceRuntime builds a ServiceRuntime using client and this
-// process's InstanceID(). It has no ServiceSpec until Configure is
-// called.
-func NewServiceRuntime(client *redis.Client) ServiceRuntime {
-	return ServiceRuntime{
+// NewRuntime builds a Runtime using client and this process's
+// InstanceID(). It has no ServiceSpec until Configure is called.
+func NewRuntime(client *redis.Client) Runtime {
+	return Runtime{
 		ControlPlane: NewControlPlane(client),
 		Session:      NewSession(),
 	}
@@ -122,24 +121,24 @@ func NewServiceRuntime(client *redis.Client) ServiceRuntime {
 // successful Claim and before Start; Start fills it into the
 // ServiceSpec's Invocation field automatically, so Configure doesn't
 // need to set it.
-func (sr *ServiceRuntime) RecordInvocation(r *http.Request, requestID string) {
+func (sr *Runtime) RecordInvocation(r *http.Request, requestID string) {
 	sr.invocation = InvocationInfoFromRequest(r, requestID)
 }
 
 // Configure attaches the ServiceSpec Start will run. It must be called
 // after a successful Claim and before Start.
-func (sr *ServiceRuntime) Configure(spec ServiceSpec) {
+func (sr *Runtime) Configure(spec ServiceSpec) {
 	sr.spec = spec
 }
 
 // DefaultShutdownHandler returns a handler suitable for a
 // control:shutdown-shaped channel: parse payload as a ShutdownRequest,
-// log its reason under this ServiceRuntime's own namespace (via the
-// embedded ControlPlane's channels.Defaults), and Cancel it. It's the
-// behavior every such channel wants unless a service needs to do more
-// on shutdown than just stop -- which most don't, so most services
-// never need to write their own handleShutdown at all.
-func (sr *ServiceRuntime) DefaultShutdownHandler() func(payload string) {
+// log its reason under this Runtime's own namespace (via the embedded
+// ControlPlane's channels.Defaults), and Cancel it. It's the behavior
+// every such channel wants unless a service needs to do more on
+// shutdown than just stop -- which most don't, so most services never
+// need to write their own handleShutdown at all.
+func (sr *Runtime) DefaultShutdownHandler() func(payload string) {
 	label := sr.Namespace
 	if label == "" {
 		label = "service"
@@ -156,7 +155,7 @@ func (sr *ServiceRuntime) DefaultShutdownHandler() func(payload string) {
 // returns. It must only be called once -- a second call is a no-op
 // (guarded by the embedded Session.Begin), and Configure must have been
 // called first.
-func (sr *ServiceRuntime) Start(ctx context.Context) {
+func (sr *Runtime) Start(ctx context.Context) {
 	sr.Begin(ctx, func() {
 		spec := sr.spec
 		spec.Invocation = sr.invocation
