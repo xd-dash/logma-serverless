@@ -21,8 +21,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"sync"
-	"sync/atomic"
 
 	"github.com/xd-dash/logma-serverless/pubsub"
 )
@@ -33,12 +31,6 @@ const (
 
 	inputBufferSize = 64
 	eventBufferSize = 64
-)
-
-const (
-	runtimeStateIdle int32 = iota
-	runtimeStateRunning
-	runtimeStateDone
 )
 
 type runtimeMessage struct {
@@ -61,12 +53,6 @@ type AddSubscription struct {
 	Channel string `json:"channel"`
 }
 
-// ShutdownRequest is the payload published to control:shutdown to drain
-// and terminate a running container.
-type ShutdownRequest struct {
-	Reason string `json:"reason"`
-}
-
 // PublishRequest is the payload delivered to a subscribed channel. If the
 // message itself doesn't carry a channel, the Redis channel it arrived on
 // is used instead.
@@ -81,34 +67,24 @@ type PublishRequest struct {
 // maxInstanceRequestConcurrency=1 configuration.
 type Runtime struct {
 	pubsub.ControlPlane
-
-	ctx    context.Context
-	cancel context.CancelFunc
+	pubsub.Session
 
 	input  chan runtimeMessage
 	events chan PublishRequest
 	status chan subscriptionStopped
-	done   chan struct{}
 
 	invocation pubsub.InvocationInfo
-
-	state     atomic.Int32
-	startOnce sync.Once
 }
 
 // NewRuntime builds a Runtime wired to REDIS_URI/REDISCLI_AUTH. It does
 // not connect or start any subscriptions until Start is called.
 func NewRuntime() *Runtime {
-	ctx, cancel := context.WithCancel(context.Background())
-
 	return &Runtime{
 		ControlPlane: pubsub.NewControlPlane(pubsub.NewClientFromEnv()),
-		ctx:          ctx,
-		cancel:       cancel,
+		Session:      pubsub.NewSession(),
 		input:        make(chan runtimeMessage, inputBufferSize),
 		events:       make(chan PublishRequest, eventBufferSize),
 		status:       make(chan subscriptionStopped, inputBufferSize),
-		done:         make(chan struct{}),
 	}
 }
 
@@ -120,49 +96,18 @@ func (rt *Runtime) RecordInvocation(r *http.Request, requestID string) {
 	rt.invocation = pubsub.InvocationInfoFromRequest(r, requestID)
 }
 
-// Claim attempts to take exclusive ownership of the runtime for the
-// calling request. It returns false if the runtime has already been
-// claimed (by a concurrent request, or a previous one that hasn't
-// finished) or has already run to completion.
-func (rt *Runtime) Claim() bool {
-	return rt.state.CompareAndSwap(runtimeStateIdle, runtimeStateRunning)
-}
-
 // Events returns the channel of fanned-out Pub/Sub messages.
 func (rt *Runtime) Events() <-chan PublishRequest {
 	return rt.events
 }
 
-// Done returns a channel that's closed once Start has returned.
-func (rt *Runtime) Done() <-chan struct{} {
-	return rt.done
-}
-
-// Cancel ends the runtime's lifetime, causing Start to return. It's safe
-// to call multiple times and from any goroutine.
-func (rt *Runtime) Cancel() {
-	rt.cancel()
-}
-
 // Start runs the runtime's actor loop until ctx is cancelled or a
 // control:shutdown message is received. It blocks until the runtime
-// stops, and must only be called once (guarded by startOnce -- a second
-// call is a no-op that returns immediately).
+// stops, and must only be called once -- a second call is a no-op that
+// returns immediately (guarded by the embedded Session.Begin, which
+// also provides Claim/Done/Cancel).
 func (rt *Runtime) Start(ctx context.Context) {
-	rt.startOnce.Do(func() {
-		defer rt.state.Store(runtimeStateDone)
-		defer close(rt.done)
-
-		go func() {
-			select {
-			case <-ctx.Done():
-				rt.cancel()
-			case <-rt.ctx.Done():
-			}
-		}()
-
-		rt.run()
-	})
+	rt.Begin(ctx, rt.run)
 }
 
 func (rt *Runtime) run() {
@@ -196,7 +141,7 @@ func (rt *Runtime) run() {
 	instanceAddChannel := rt.InstanceChannel(controlAddChannel)
 	instanceShutdownChannel := rt.InstanceChannel(controlShutdownChannel)
 
-	relayCtx, cancelRelays := context.WithCancel(rt.ctx)
+	relayCtx, cancelRelays := context.WithCancel(rt.Context())
 	addRelay := rt.Relay(relayCtx, controlAddChannel)
 	shutdownRelay := rt.Relay(relayCtx, controlShutdownChannel)
 	defer func() {
@@ -208,7 +153,7 @@ func (rt *Runtime) run() {
 	// Recorded via plain Redis commands before the client issues its
 	// first Subscribe below -- once it does, this client is never used
 	// for anything but Publish/Subscribe again.
-	if err := pubsub.RegisterInvocation(rt.ctx, rt.Client, rt.invocation); err != nil {
+	if err := pubsub.RegisterInvocation(rt.Context(), rt.Client, rt.invocation); err != nil {
 		log.Printf("failed to record invocation info: %v", err)
 	}
 
@@ -232,7 +177,7 @@ func (rt *Runtime) run() {
 
 	for {
 		select {
-		case <-rt.ctx.Done():
+		case <-rt.Context().Done():
 			return
 
 		case message := <-rt.input:
@@ -248,7 +193,7 @@ func (rt *Runtime) run() {
 
 		case stopped := <-rt.status:
 			stopSubscription(stopped.channel)
-			if rt.ctx.Err() != nil {
+			if rt.Context().Err() != nil {
 				return
 			}
 
@@ -307,12 +252,7 @@ func (rt *Runtime) handleAdd(payload string, add func(string) error) {
 }
 
 func (rt *Runtime) handleShutdown(payload string) {
-	var request ShutdownRequest
-	if payload != "" {
-		if err := json.Unmarshal([]byte(payload), &request); err != nil {
-			log.Printf("invalid shutdown message: %v", err)
-		}
-	}
+	request := pubsub.ParseShutdownRequest(payload)
 	log.Printf("shutting down runtime: reason=%q", request.Reason)
 }
 
@@ -357,7 +297,7 @@ func (rt *Runtime) startSubscription(channel string, subscriptions map[string]*s
 		return nil
 	}
 
-	ctx, cancel := context.WithCancel(rt.ctx)
+	ctx, cancel := context.WithCancel(rt.Context())
 	subscriptions[channel] = &subscription{
 		channel: channel,
 		cancel:  cancel,
@@ -374,7 +314,7 @@ func (rt *Runtime) startSubscription(channel string, subscriptions map[string]*s
 		<-sub.Stopped()
 		select {
 		case rt.status <- subscriptionStopped{channel: channel}:
-		case <-rt.ctx.Done():
+		case <-rt.Context().Done():
 		}
 	}()
 

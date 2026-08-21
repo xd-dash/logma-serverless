@@ -8,7 +8,7 @@ import (
 
 func TestHandlePublish(t *testing.T) {
 	rt := NewRuntime()
-	defer rt.cancel()
+	defer rt.Cancel()
 
 	t.Run("empty payload is ignored", func(t *testing.T) {
 		rt.handlePublish(runtimeMessage{channel: "chan", payload: ""})
@@ -64,7 +64,7 @@ func TestHandlePublish(t *testing.T) {
 
 func TestHandleAdd(t *testing.T) {
 	rt := NewRuntime()
-	defer rt.cancel()
+	defer rt.Cancel()
 
 	t.Run("empty channel is rejected", func(t *testing.T) {
 		called := false
@@ -102,7 +102,7 @@ func TestHandleAdd(t *testing.T) {
 
 func TestBootstrap(t *testing.T) {
 	rt := NewRuntime()
-	defer rt.cancel()
+	defer rt.Cancel()
 
 	t.Run("unset env var is a no-op", func(t *testing.T) {
 		os.Unsetenv("REDIS_DEFAULT_SUBSCRIPTIONS")
@@ -140,7 +140,7 @@ func TestBootstrap(t *testing.T) {
 
 func TestClaim(t *testing.T) {
 	rt := NewRuntime()
-	defer rt.cancel()
+	defer rt.Cancel()
 
 	if !rt.Claim() {
 		t.Fatal("first Claim should succeed")
