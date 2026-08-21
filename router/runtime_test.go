@@ -1,7 +1,6 @@
 package router
 
 import (
-	"errors"
 	"testing"
 	"time"
 )
@@ -100,49 +99,76 @@ func TestHandleAdd(t *testing.T) {
 	})
 }
 
-func TestBootstrap(t *testing.T) {
+func TestHandleShutdown(t *testing.T) {
 	rt := NewRuntime()
 	defer rt.Cancel()
 
-	withDefaultSubscriptions := func(channels []string, fn func()) {
-		orig := DefaultSubscriptions
-		DefaultSubscriptions = channels
-		defer func() { DefaultSubscriptions = orig }()
-		fn()
+	rt.handleShutdown(`{"reason":"maintenance"}`)
+
+	select {
+	case <-rt.Context().Done():
+	default:
+		t.Fatal("expected handleShutdown to cancel the runtime")
+	}
+}
+
+func TestDefaultSubscriptionsIncludeAddAndShutdown(t *testing.T) {
+	rt := NewRuntime()
+	defer rt.Cancel()
+
+	if len(Subscriptions) < 2 {
+		t.Fatalf("expected at least 2 default subscriptions, got %d", len(Subscriptions))
 	}
 
-	t.Run("empty list is a no-op", func(t *testing.T) {
-		withDefaultSubscriptions(nil, func() {
-			if err := rt.bootstrap(func(string) error { return nil }); err != nil {
-				t.Fatalf("expected no error, got %v", err)
-			}
-		})
-	})
+	addSub, shutdownSub := Subscriptions[0], Subscriptions[1]
 
-	t.Run("adds every listed channel", func(t *testing.T) {
-		withDefaultSubscriptions([]string{"a", "b", "c"}, func() {
-			var added []string
-			err := rt.bootstrap(func(channel string) error {
-				added = append(added, channel)
-				return nil
-			})
-			if err != nil {
-				t.Fatalf("expected no error, got %v", err)
-			}
-			if len(added) != 3 || added[0] != "a" || added[1] != "b" || added[2] != "c" {
-				t.Fatalf("unexpected channels added: %v", added)
-			}
-		})
-	})
+	if got, want := addSub.Channel(rt), rt.AddChannel(); got != want {
+		t.Fatalf("expected the first default subscription's channel to be AddChannel (%q), got %q", want, got)
+	}
+	if got, want := shutdownSub.Channel(rt), rt.ShutdownChannel(); got != want {
+		t.Fatalf("expected the second default subscription's channel to be ShutdownChannel (%q), got %q", want, got)
+	}
 
-	t.Run("propagates add errors", func(t *testing.T) {
-		withDefaultSubscriptions([]string{"a"}, func() {
-			wantErr := errors.New("boom")
-			if err := rt.bootstrap(func(string) error { return wantErr }); !errors.Is(err, wantErr) {
-				t.Fatalf("expected bootstrap to propagate add's error, got %v", err)
-			}
-		})
+	var addedChannel string
+	addSub.Handle(rt, `{"channel":"dev:global:logs:3"}`, func(channel string) error {
+		addedChannel = channel
+		return nil
 	})
+	if addedChannel != "dev:global:logs:3" {
+		t.Fatalf("expected the add subscription's Handle to delegate to handleAdd, got %q", addedChannel)
+	}
+
+	shutdownSub.Handle(rt, `{"reason":"test"}`, nil)
+	select {
+	case <-rt.Context().Done():
+	default:
+		t.Fatal("expected the shutdown subscription's Handle to delegate to handleShutdown")
+	}
+}
+
+func TestRegisterAppendsSubscription(t *testing.T) {
+	orig := Subscriptions
+	defer func() { Subscriptions = orig }()
+	before := len(Subscriptions)
+
+	var called bool
+	Register(
+		func(rt *Runtime) string { return "test:channel" },
+		func(rt *Runtime, payload string, add func(string) error) { called = true },
+	)
+
+	if len(Subscriptions) != before+1 {
+		t.Fatalf("expected Register to append one subscription, got %d (was %d)", len(Subscriptions), before)
+	}
+
+	added := Subscriptions[len(Subscriptions)-1]
+	if got := added.Channel(&Runtime{}); got != "test:channel" {
+		t.Fatalf("expected the registered channel resolver to return %q, got %q", "test:channel", got)
+	}
+	added.Handle(&Runtime{}, "payload", func(string) error { return nil })
+	if !called {
+		t.Fatal("expected the registered Handle to be called")
+	}
 }
 
 func TestClaim(t *testing.T) {
