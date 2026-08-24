@@ -103,6 +103,7 @@ func TestRuntimeRecordInvocationFillsSpecAtStart(t *testing.T) {
 }
 
 func TestRecordInvocationFallsBackToHeaderWhenRedisAuthFromEnvIsUnset(t *testing.T) {
+	t.Setenv("REDIS_URI", "env-host:6379")
 	t.Setenv("REDISCLI_AUTH", "")
 
 	sr := NewRuntimeFromEnv()
@@ -117,6 +118,7 @@ func TestRecordInvocationFallsBackToHeaderWhenRedisAuthFromEnvIsUnset(t *testing
 }
 
 func TestRecordInvocationPrefersEnvRedisAuthOverHeader(t *testing.T) {
+	t.Setenv("REDIS_URI", "env-host:6379")
 	t.Setenv("REDISCLI_AUTH", "env-secret")
 
 	sr := NewRuntimeFromEnv()
@@ -127,6 +129,36 @@ func TestRecordInvocationPrefersEnvRedisAuthOverHeader(t *testing.T) {
 
 	if got := sr.Client.Options().Password; got != "env-secret" {
 		t.Fatalf("expected env auth to take precedence, got %q", got)
+	}
+}
+
+func TestRecordInvocationFallsBackToHeaderWhenRedisURIFromEnvIsUnset(t *testing.T) {
+	t.Setenv("REDIS_URI", "")
+	t.Setenv("REDISCLI_AUTH", "env-secret")
+
+	sr := NewRuntimeFromEnv()
+	req := httptest.NewRequest("POST", "/stream", nil)
+	req.Header.Set(HeaderRedisURI, "header-host:6379")
+
+	sr.RecordInvocation(req, "req-1")
+
+	if got := sr.Client.Options().Addr; got != "header-host:6379" {
+		t.Fatalf("expected RecordInvocation to pick up the header URI, got %q", got)
+	}
+}
+
+func TestRecordInvocationPrefersEnvRedisURIOverHeader(t *testing.T) {
+	t.Setenv("REDIS_URI", "env-host:6379")
+	t.Setenv("REDISCLI_AUTH", "env-secret")
+
+	sr := NewRuntimeFromEnv()
+	req := httptest.NewRequest("POST", "/stream", nil)
+	req.Header.Set(HeaderRedisURI, "header-host:6379")
+
+	sr.RecordInvocation(req, "req-1")
+
+	if got := sr.Client.Options().Addr; got != "env-host:6379" {
+		t.Fatalf("expected env URI to take precedence, got %q", got)
 	}
 }
 

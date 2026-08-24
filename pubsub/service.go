@@ -109,15 +109,16 @@ type Runtime struct {
 	invocation InvocationInfo
 	spec       ServiceSpec
 
-	// redisAuthFromEnv marks a Runtime built by NewRuntimeFromEnv, as
-	// opposed to NewRuntime(client) with an explicitly supplied client
-	// (every test in this package uses the latter, pointed at a
-	// deliberately unreachable address). RecordInvocation only falls
-	// back to a request's X-Rediscli-Auth header when this is set and
-	// REDISCLI_AUTH itself was empty -- otherwise an explicitly supplied
-	// client would get silently replaced any time REDISCLI_AUTH happens
-	// to be unset, which is always true in a test environment.
-	redisAuthFromEnv bool
+	// redisFromEnv marks a Runtime built by NewRuntimeFromEnv, as opposed
+	// to NewRuntime(client) with an explicitly supplied client (every
+	// test in this package uses the latter, pointed at a deliberately
+	// unreachable address). RecordInvocation only falls back to a
+	// request's X-Redis-Uri/X-Rediscli-Auth headers when this is set and
+	// the corresponding env var was empty -- otherwise an explicitly
+	// supplied client would get silently replaced any time REDIS_URI/
+	// REDISCLI_AUTH happen to be unset, which is always true in a test
+	// environment.
+	redisFromEnv bool
 }
 
 // NewRuntime builds a Runtime using client and this process's
@@ -143,9 +144,9 @@ func NewRuntimeFromEnv() Runtime {
 // exactly the shape it flags (unlike a single literal returned directly).
 func newRuntime(client *redis.Client, fromEnv bool) Runtime {
 	return Runtime{
-		ControlPlane:     NewControlPlane(client),
-		Session:          NewSession(),
-		redisAuthFromEnv: fromEnv,
+		ControlPlane: NewControlPlane(client),
+		Session:      NewSession(),
+		redisFromEnv: fromEnv,
 	}
 }
 
@@ -156,15 +157,15 @@ func newRuntime(client *redis.Client, fromEnv bool) Runtime {
 // need to set it.
 //
 // For a Runtime built by NewRuntimeFromEnv, this is also where a
-// deployment that left REDISCLI_AUTH unset gets one more chance to
-// authenticate: r's X-Rediscli-Auth header, if present, replaces the
-// Client built (with an empty password) at construction time. The
-// replacement is free to do here specifically because nothing has used
-// Client yet -- go-redis doesn't connect until the first command, and
-// RecordInvocation always runs before Start.
+// deployment that left REDIS_URI and/or REDISCLI_AUTH unset gets one
+// more chance to connect: r's X-Redis-Uri/X-Rediscli-Auth headers, if
+// present, replace the Client built at construction time (see
+// NewClientFromRequest). The replacement is free to do here specifically
+// because nothing has used Client yet -- go-redis doesn't connect until
+// the first command, and RecordInvocation always runs before Start.
 func (sr *Runtime) RecordInvocation(r *http.Request, requestID string) {
 	sr.invocation = InvocationInfoFromRequest(r, requestID)
-	if sr.redisAuthFromEnv && os.Getenv("REDISCLI_AUTH") == "" {
+	if sr.redisFromEnv && (os.Getenv("REDIS_URI") == "" || os.Getenv("REDISCLI_AUTH") == "") {
 		sr.Client = NewClientFromRequest(r)
 	}
 }

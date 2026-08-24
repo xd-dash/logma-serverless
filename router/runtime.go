@@ -126,18 +126,18 @@ func defaultSubscriptionsFromEnv() []string {
 // successful Claim and before Start -- Start records it in Redis as the
 // first thing it does, strictly before the client's first Subscribe.
 //
-// This is also where a deployment that left REDISCLI_AUTH unset gets one
-// more chance to authenticate: r's X-Rediscli-Auth header, if present,
-// replaces the Client NewRuntime built (with an empty password) at
-// construction time. Safe to replace here specifically because nothing
-// has used Client yet -- go-redis doesn't connect until the first
-// command, and RecordInvocation always runs before Start. Unlike
-// pubsub.Runtime, this Runtime has only one constructor (NewRuntime,
-// always built from env), so there's no explicitly-supplied-client case
-// to avoid clobbering.
+// This is also where a deployment that left REDIS_URI and/or
+// REDISCLI_AUTH unset gets one more chance to connect: r's
+// X-Redis-Uri/X-Rediscli-Auth headers, if present, replace the Client
+// NewRuntime built at construction time (see pubsub.NewClientFromRequest).
+// Safe to replace here specifically because nothing has used Client yet
+// -- go-redis doesn't connect until the first command, and
+// RecordInvocation always runs before Start. Unlike pubsub.Runtime, this
+// Runtime has only one constructor (NewRuntime, always built from env),
+// so there's no explicitly-supplied-client case to avoid clobbering.
 func (rt *Runtime) RecordInvocation(r *http.Request, requestID string) {
 	rt.invocation = pubsub.InvocationInfoFromRequest(r, requestID)
-	if os.Getenv("REDISCLI_AUTH") == "" {
+	if os.Getenv("REDIS_URI") == "" || os.Getenv("REDISCLI_AUTH") == "" {
 		rt.Client = pubsub.NewClientFromRequest(r)
 	}
 }
