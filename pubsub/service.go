@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -107,15 +108,23 @@ type Runtime struct {
 
 	invocation InvocationInfo
 	spec       ServiceSpec
+
+	// redisFromEnv marks a Runtime built by NewRuntimeFromEnv, as opposed
+	// to NewRuntime(client) with an explicitly supplied client (every
+	// test in this package uses the latter, pointed at a deliberately
+	// unreachable address). RecordInvocation only falls back to a
+	// request's X-Redis-Uri/X-Rediscli-Auth headers when this is set and
+	// the corresponding env var was empty -- otherwise an explicitly
+	// supplied client would get silently replaced any time REDIS_URI/
+	// REDISCLI_AUTH happen to be unset, which is always true in a test
+	// environment.
+	redisFromEnv bool
 }
 
 // NewRuntime builds a Runtime using client and this process's
 // InstanceID(). It has no ServiceSpec until Configure is called.
 func NewRuntime(client *redis.Client) Runtime {
-	return Runtime{
-		ControlPlane: NewControlPlane(client),
-		Session:      NewSession(),
-	}
+	return newRuntime(client, false)
 }
 
 // NewRuntimeFromEnv is NewRuntime(NewClientFromEnv()) -- what nearly
@@ -124,7 +133,21 @@ func NewRuntime(client *redis.Client) Runtime {
 // directly only when the client has to come from somewhere else (tests
 // pointing at an unreachable address, a non-default Redis instance).
 func NewRuntimeFromEnv() Runtime {
-	return NewRuntime(NewClientFromEnv())
+	return newRuntime(NewClientFromEnv(), true)
+}
+
+// newRuntime is NewRuntime/NewRuntimeFromEnv's shared constructor,
+// returning the composite literal directly rather than through a named,
+// then-mutated local -- Runtime embeds Session, which carries a
+// sync/atomic value go vet's copylocks check flags on any copy it can
+// see through, and a construct-then-mutate-then-return pattern is
+// exactly the shape it flags (unlike a single literal returned directly).
+func newRuntime(client *redis.Client, fromEnv bool) Runtime {
+	return Runtime{
+		ControlPlane: NewControlPlane(client),
+		Session:      NewSession(),
+		redisFromEnv: fromEnv,
+	}
 }
 
 // RecordInvocation captures which Cloud Function instance and HTTP
@@ -132,8 +155,19 @@ func NewRuntimeFromEnv() Runtime {
 // successful Claim and before Start; Start fills it into the
 // ServiceSpec's Invocation field automatically, so Configure doesn't
 // need to set it.
+//
+// For a Runtime built by NewRuntimeFromEnv, this is also where a
+// deployment that left REDIS_URI and/or REDISCLI_AUTH unset gets one
+// more chance to connect: r's X-Redis-Uri/X-Rediscli-Auth headers, if
+// present, replace the Client built at construction time (see
+// NewClientFromRequest). The replacement is free to do here specifically
+// because nothing has used Client yet -- go-redis doesn't connect until
+// the first command, and RecordInvocation always runs before Start.
 func (sr *Runtime) RecordInvocation(r *http.Request, requestID string) {
 	sr.invocation = InvocationInfoFromRequest(r, requestID)
+	if sr.redisFromEnv && (os.Getenv("REDIS_URI") == "" || os.Getenv("REDISCLI_AUTH") == "") {
+		sr.Client = NewClientFromRequest(r)
+	}
 }
 
 // Configure attaches the ServiceSpec Start will run. It must be called
