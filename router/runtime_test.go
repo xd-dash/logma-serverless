@@ -61,6 +61,47 @@ func TestHandlePublish(t *testing.T) {
 	})
 }
 
+func TestDefaultSubscriptionsFromEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want []string
+	}{
+		{name: "unset", env: "", want: nil},
+		{name: "valid JSON array", env: `["stonks:control:add:global","stonks:control:shutdown:global"]`, want: []string{"stonks:control:add:global", "stonks:control:shutdown:global"}},
+		{name: "empty JSON array", env: `[]`, want: nil},
+		{name: "invalid JSON falls back to nil", env: `not json`, want: nil},
+		{name: "JSON object (not an array) falls back to nil", env: `{"a":"b"}`, want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("REDIS_DEFAULT_SUBSCRIPTIONS", tt.env)
+
+			got := defaultSubscriptionsFromEnv()
+			if len(got) != len(tt.want) {
+				t.Fatalf("expected %v, got %v", tt.want, got)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("expected %v, got %v", tt.want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestNewRuntimePicksUpDefaultChannelsFromEnv(t *testing.T) {
+	t.Setenv("REDIS_DEFAULT_SUBSCRIPTIONS", `["stonks:control:add:global"]`)
+
+	rt := NewRuntime()
+	defer rt.Cancel()
+
+	if len(rt.defaultChannels) != 1 || rt.defaultChannels[0] != "stonks:control:add:global" {
+		t.Fatalf("expected defaultChannels to be [stonks:control:add:global], got %v", rt.defaultChannels)
+	}
+}
+
 func TestRuntimeSubscribeSetsChannels(t *testing.T) {
 	rt := NewRuntime()
 	defer rt.Cancel()

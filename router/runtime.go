@@ -7,10 +7,13 @@
 // container's own instance channel (via pubsub.ControlPlane, embedded
 // below) and the shared global channel that reaches every container, so
 // a control message can target one specific container or all of them,
-// lets Redis hot-load additional subscriptions into the running
-// container, fans every subscribed channel's messages out as one event
-// stream, and shuts the runtime down (ending the request) on a
-// control:shutdown publish or client disconnect.
+// additionally subscribes to whatever literal channels
+// REDIS_DEFAULT_SUBSCRIPTIONS names (see defaultSubscriptionsFromEnv) and
+// whatever the claiming request itself asks for via ?channel=, lets Redis
+// hot-load further subscriptions into the running container, fans every
+// subscribed channel's messages out as one event stream, and shuts the
+// runtime down (ending the request) on a control:shutdown publish or
+// client disconnect.
 package router
 
 import (
@@ -19,6 +22,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/xd-dash/logma-serverless/pubsub"
 )
@@ -71,18 +75,50 @@ type Runtime struct {
 	// no dedicated Handle: any message on them falls through to
 	// handlePublish, the same fanout a control:add hot-load gets.
 	channels []string
+
+	// defaultChannels are literal Redis channel names, resolved once at
+	// construction from REDIS_DEFAULT_SUBSCRIPTIONS, that every Runtime
+	// this container creates subscribes to on start -- regardless of
+	// what (if anything) the claiming request itself passes via
+	// Subscribe. This is how a logma-serverless deployment gets wired to
+	// a companion producer's well-known channels (e.g. a stonks
+	// instance's control:add broadcast) without every caller needing to
+	// know and repeat them via ?channel=. Like channels above, entries
+	// here get no dedicated Handle and fall through to handlePublish.
+	defaultChannels []string
 }
 
 // NewRuntime builds a Runtime wired to REDIS_URI/REDISCLI_AUTH. It does
 // not connect or start any subscriptions until Start is called.
 func NewRuntime() *Runtime {
 	return &Runtime{
-		ControlPlane: pubsub.NewControlPlane(pubsub.NewClientFromEnv()),
-		Session:      pubsub.NewSession(),
-		input:        make(chan runtimeMessage, inputBufferSize),
-		events:       make(chan PublishRequest, eventBufferSize),
-		status:       make(chan subscriptionStopped, inputBufferSize),
+		ControlPlane:    pubsub.NewControlPlane(pubsub.NewClientFromEnv()),
+		Session:         pubsub.NewSession(),
+		input:           make(chan runtimeMessage, inputBufferSize),
+		events:          make(chan PublishRequest, eventBufferSize),
+		status:          make(chan subscriptionStopped, inputBufferSize),
+		defaultChannels: defaultSubscriptionsFromEnv(),
 	}
+}
+
+// defaultSubscriptionsFromEnv parses REDIS_DEFAULT_SUBSCRIPTIONS as a JSON
+// array of literal Redis channel names, e.g. ["stonks:control:add:global"].
+// An unset or empty env var returns nil (no defaults); invalid JSON logs a
+// warning and also returns nil rather than failing construction -- a
+// malformed deploy-time setting shouldn't take down every Runtime this
+// container creates.
+func defaultSubscriptionsFromEnv() []string {
+	raw := os.Getenv("REDIS_DEFAULT_SUBSCRIPTIONS")
+	if raw == "" {
+		return nil
+	}
+
+	var channels []string
+	if err := json.Unmarshal([]byte(raw), &channels); err != nil {
+		log.Printf("invalid REDIS_DEFAULT_SUBSCRIPTIONS (must be a JSON array of channel name strings): %v", err)
+		return nil
+	}
+	return channels
 }
 
 // RecordInvocation captures which Cloud Function instance and HTTP
@@ -172,10 +208,19 @@ func (rt *Runtime) run() {
 		}
 	}
 
-	// rt.channels are literal channel names the claiming request asked
-	// for (see Subscribe) -- unlike Subscriptions entries above, a
-	// failure here doesn't abort startup: a bad user-supplied channel
-	// shouldn't take down the whole session.
+	// rt.defaultChannels (REDIS_DEFAULT_SUBSCRIPTIONS, resolved once at
+	// construction) and rt.channels (literal channel names the claiming
+	// request asked for via Subscribe/?channel=) are both outside the
+	// Subscriptions registry above -- unlike those, a failure here
+	// doesn't abort startup: a bad default or user-supplied channel
+	// shouldn't take down the whole session. startSubscription no-ops on
+	// a channel already subscribed, so a name appearing in both slices
+	// is harmless.
+	for _, channel := range rt.defaultChannels {
+		if err := startSubscription(channel); err != nil {
+			log.Printf("failed to subscribe to default channel %q: %v", channel, err)
+		}
+	}
 	for _, channel := range rt.channels {
 		if err := startSubscription(channel); err != nil {
 			log.Printf("failed to subscribe to requested channel %q: %v", channel, err)
