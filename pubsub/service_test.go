@@ -102,6 +102,50 @@ func TestRuntimeRecordInvocationFillsSpecAtStart(t *testing.T) {
 	}
 }
 
+func TestRecordInvocationFallsBackToHeaderWhenRedisAuthFromEnvIsUnset(t *testing.T) {
+	t.Setenv("REDISCLI_AUTH", "")
+
+	sr := NewRuntimeFromEnv()
+	req := httptest.NewRequest("POST", "/stream", nil)
+	req.Header.Set(HeaderRedisAuth, "header-secret")
+
+	sr.RecordInvocation(req, "req-1")
+
+	if got := sr.Client.Options().Password; got != "header-secret" {
+		t.Fatalf("expected RecordInvocation to pick up the header auth, got %q", got)
+	}
+}
+
+func TestRecordInvocationPrefersEnvRedisAuthOverHeader(t *testing.T) {
+	t.Setenv("REDISCLI_AUTH", "env-secret")
+
+	sr := NewRuntimeFromEnv()
+	req := httptest.NewRequest("POST", "/stream", nil)
+	req.Header.Set(HeaderRedisAuth, "header-secret")
+
+	sr.RecordInvocation(req, "req-1")
+
+	if got := sr.Client.Options().Password; got != "env-secret" {
+		t.Fatalf("expected env auth to take precedence, got %q", got)
+	}
+}
+
+func TestRecordInvocationNeverReplacesAnExplicitlySuppliedClient(t *testing.T) {
+	t.Setenv("REDISCLI_AUTH", "")
+
+	sr := NewRuntime(unreachableClient())
+	originalClient := sr.Client
+
+	req := httptest.NewRequest("POST", "/stream", nil)
+	req.Header.Set(HeaderRedisAuth, "header-secret")
+
+	sr.RecordInvocation(req, "req-1")
+
+	if sr.Client != originalClient {
+		t.Fatal("expected RecordInvocation to leave an explicitly supplied client untouched")
+	}
+}
+
 func TestRuntimeDefaultShutdownHandlerCancelsSession(t *testing.T) {
 	sr := NewRuntime(unreachableClient())
 

@@ -1,8 +1,12 @@
 package router
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/xd-dash/logma-serverless/pubsub"
 )
 
 func TestHandlePublish(t *testing.T) {
@@ -110,6 +114,38 @@ func TestRuntimeSubscribeSetsChannels(t *testing.T) {
 
 	if len(rt.channels) != 2 || rt.channels[0] != "a" || rt.channels[1] != "b" {
 		t.Fatalf("expected Subscribe to set channels to [a b], got %v", rt.channels)
+	}
+}
+
+func TestRuntimeRecordInvocationFallsBackToHeaderWhenRedisAuthUnset(t *testing.T) {
+	t.Setenv("REDISCLI_AUTH", "")
+
+	rt := NewRuntime()
+	defer rt.Cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	req.Header.Set(pubsub.HeaderRedisAuth, "header-secret")
+
+	rt.RecordInvocation(req, "req-1")
+
+	if got := rt.Client.Options().Password; got != "header-secret" {
+		t.Fatalf("expected RecordInvocation to pick up the header auth, got %q", got)
+	}
+}
+
+func TestRuntimeRecordInvocationPrefersEnvRedisAuthOverHeader(t *testing.T) {
+	t.Setenv("REDISCLI_AUTH", "env-secret")
+
+	rt := NewRuntime()
+	defer rt.Cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	req.Header.Set(pubsub.HeaderRedisAuth, "header-secret")
+
+	rt.RecordInvocation(req, "req-1")
+
+	if got := rt.Client.Options().Password; got != "env-secret" {
+		t.Fatalf("expected env auth to take precedence, got %q", got)
 	}
 }
 
