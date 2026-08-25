@@ -89,6 +89,86 @@ func TestBuildRecoversFromPanic(t *testing.T) {
 	}
 }
 
+func TestRequireRedisAuthRejectsMismatchedHeader(t *testing.T) {
+	t.Setenv("REDISCLI_AUTH", "secret")
+
+	h := requireRedisAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(pubsub.HeaderRedisAuth, "wrong")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for a mismatched header, got %d", rec.Code)
+	}
+}
+
+func TestRequireRedisAuthRejectsMissingHeader(t *testing.T) {
+	t.Setenv("REDISCLI_AUTH", "secret")
+
+	h := requireRedisAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for a missing header, got %d", rec.Code)
+	}
+}
+
+func TestRequireRedisAuthAllowsMatchingHeader(t *testing.T) {
+	t.Setenv("REDISCLI_AUTH", "secret")
+
+	h := requireRedisAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(pubsub.HeaderRedisAuth, "secret")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a matching header, got %d", rec.Code)
+	}
+}
+
+func TestRequireRedisAuthSkippedWhenUnset(t *testing.T) {
+	t.Setenv("REDISCLI_AUTH", "")
+
+	h := requireRedisAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 when REDISCLI_AUTH is unset (no header required), got %d", rec.Code)
+	}
+}
+
+func TestNewRouterRejectsRunWithoutRedisAuthHeader(t *testing.T) {
+	t.Setenv("REDISCLI_AUTH", "secret")
+
+	r := NewRouter()
+
+	req := httptest.NewRequest(http.MethodPost, "/run", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for /run without a matching X-Rediscli-Auth header, got %d", rec.Code)
+	}
+}
+
 func TestRuntimeHolderReusesAfterSessionEnds(t *testing.T) {
 	holder := pubsub.NewHolder(NewRuntime)
 
