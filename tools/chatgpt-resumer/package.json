@@ -1,0 +1,7 @@
+{
+  "name": "@xd-dash/chatgpt-resumer",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node resumer.mjs" },
+  "dependencies": { "playwright": "1.62.1" }
+}

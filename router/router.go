@@ -65,6 +65,7 @@ func NewRouter() http.Handler {
 		r.Use(requireRedisAuth)
 		r.Post("/run", runHandler(holder))
 		r.Get("/events", eventsHandler(holder))
+		r.Post("/continuations", continuationHandler(publishContinuation))
 	})
 }
 
