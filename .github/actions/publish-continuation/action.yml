@@ -1,0 +1,73 @@
+name: Publish ChatGPT continuation
+description: Publish a bounded continuation event through logma-serverless
+
+inputs:
+  endpoint:
+    description: logma-serverless base URL
+    required: true
+  redis-auth:
+    description: Value for X-Rediscli-Auth
+    required: true
+  channel:
+    description: Unguessable chatgpt:continuation:* channel
+    required: true
+  chat-url:
+    description: Original ChatGPT conversation URL
+    required: false
+  status:
+    description: success, failure, or cancelled
+    required: true
+  summary:
+    description: Compact result summary used to resume the work
+    required: true
+  prompt:
+    description: Explicit instruction for the resumed chat
+    required: true
+  artifacts-json:
+    description: JSON array of artifact URLs
+    default: "[]"
+  context-json:
+    description: Additional bounded JSON context
+    default: "{}"
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        CONTINUATION_ENDPOINT: ${{ inputs.endpoint }}
+        CONTINUATION_REDIS_AUTH: ${{ inputs.redis-auth }}
+        CONTINUATION_CHANNEL: ${{ inputs.channel }}
+        CONTINUATION_CHAT_URL: ${{ inputs.chat-url }}
+        CONTINUATION_STATUS: ${{ inputs.status }}
+        CONTINUATION_SUMMARY: ${{ inputs.summary }}
+        CONTINUATION_PROMPT: ${{ inputs.prompt }}
+        CONTINUATION_ARTIFACTS: ${{ inputs.artifacts-json }}
+        CONTINUATION_CONTEXT: ${{ inputs.context-json }}
+      run: |
+        set -euo pipefail
+        payload="$({
+          jq -n \
+            --arg id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --arg channel "$CONTINUATION_CHANNEL" \
+            --arg status "$CONTINUATION_STATUS" \
+            --arg issued_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg chat_url "$CONTINUATION_CHAT_URL" \
+            --arg prompt "$CONTINUATION_PROMPT" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg ref "$GITHUB_REF" \
+            --arg workflow_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg summary "$CONTINUATION_SUMMARY" \
+            --argjson artifacts "$CONTINUATION_ARTIFACTS" \
+            --argjson extra "$CONTINUATION_CONTEXT" \
+            '{version:"v1",id:$id,channel:$channel,status:$status,issued_at:$issued_at,
+              chat_url:(if $chat_url == "" then null else $chat_url end),prompt:$prompt,
+              repository:$repository,ref:$ref,workflow_url:$workflow_url,artifacts:$artifacts,
+              context:($extra + {summary:$summary})}'
+        })"
+        curl --fail-with-body --silent --show-error \
+          --retry 4 --retry-all-errors \
+          -H 'Content-Type: application/json' \
+          -H "X-Rediscli-Auth: $CONTINUATION_REDIS_AUTH" \
+          --data-binary "$payload" \
+          "${CONTINUATION_ENDPOINT%/}/continuations"
